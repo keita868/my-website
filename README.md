@@ -42,6 +42,9 @@ kyutech-orchestra-web/
 ├── package.json          # Node.jsパッケージ管理
 ├── tsconfig.json         # TypeScriptコンパイル設定
 └── README.md             # このファイル
+
+現在はabout/contactしか作ってないが、将来的には増やすつもり。
+ファイル自体は名前変わる可能性あり。
 ```
 
 ---
@@ -49,9 +52,9 @@ kyutech-orchestra-web/
 ## 🚀 セットアップ
 
 ```bash
-# リポジトリを取得
-git clone <リポジトリURL>
-cd kyutech-orchestra-web
+# リポジトリを取得（SSH）
+git clone git@github.com:keita868/my-website.git
+cd my-website
 
 # 依存パッケージのインストール
 npm install
@@ -59,11 +62,7 @@ npm install
 # TypeScriptのコンパイル（js/main.js が生成されます）
 npx tsc
 
-# ローカルでPHPを起動
-php -S localhost:8000
 ```
-
-起動後、ブラウザで `http://localhost:8000` を開いて確認してください。
 
 ---
 
