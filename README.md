@@ -42,6 +42,9 @@ kyutech-orchestra-web/
 ├── package.json          # Node.jsパッケージ管理
 ├── tsconfig.json         # TypeScriptコンパイル設定
 └── README.md             # このファイル
+
+現在はabout/contactしか作ってないが、将来的には増やすつもり。
+ファイル自体は名前変わる可能性あり。
 ```
 
 ---
