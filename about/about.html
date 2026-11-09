@@ -3,24 +3,134 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="../css/style.css">
   <title>演奏会のお知らせ</title>
 </head>
 <body>
-  <main>
-    <h1>九州工業大学交響楽団</h1>
-    <p>次回の演奏会をご案内します。</p>
-    <a href="#concert-details">演奏会の詳細を見る</a>
-
-    <section id="concert">
-      <h2>定期演奏会</h2>
-      <p>日時・会場は決まり次第お知らせします。</p>
+  <header class = "l-header">
+    <p class = "l-header__title">九州工業大学交響楽団</p>
+  </header>
+  <main class = "p-main">
+    <section class ="p-card">
+      <div>
+        <p class = "p-card__eyebrow">お知らせ</p>
+        <h1 class = "p-card__title">演奏会のお知らせ</h1>
+        <p class = "p-card__text">
+          スマートフォンで片手操作しやすいように。メニューボタンを画面下部に配置したデザインです。
+          メニューはボトムシートとして開き、主要なリンクを大きなタップ領域で表示します。
+        </p>
+      </div>
+      <p class = "p-card__hint">
+        画面下部の黒いボタンをタップしてください。<br>
+        開いた後は背景、メニュー項目、または「CLOSE」ボタンから閉じられます。
+      </p>
     </section>
-
-    <section>
-      <h2>お知らせ登録の試作</h2>
-      <label for="email">メールアドレス</label>
-      <input id="contact-email" type="email">
+  </main> 
+  <button type="button" class = "c-overlay" aria-label="メニュ‐を閉じる" tabindex="-1"></button>
+  <section  id = "mobileMenu" class = "c-menuPanel" aria-hidden="true" aria-label="グローバルメニュー">
+    <div class = "c-menuPanel__head">
+      <p class = "c-menuPanel__caption">NAVIGATION</p>
+      <h2 class="c-menuPanel__title">どこへ移動しますか？</h2>
+    </div>
+  
+    <nav>
+      <ul class="c-menuPanel__list">
+        <li class="c-menuPanel__item">
+          <a href="#home" class="c-menuPanel__link">
+            <span class="c-menuPanel__number">01</span>
+            <span class="c-menuPanel__name">ホーム</span>
+            <span class="c-menuPanel__arrow">↗</span>
+          </a>
+        </li>
+        <li class="c-menuPanel__item">
+          <a href="#about" class="c-menuPanel__link">
+            <span class="c-menuPanel__number">02</span>
+            <span class="c-menuPanel__name">団体紹介</span>
+            <span class="c-menuPanel__arrow">↗</span>
+          </a>
+        </li>
+        <li class="c-menuPanel__item">
+          <a href="#service" class="c-menuPanel__link">
+            <span class="c-menuPanel__number">03</span>
+            <span class="c-menuPanel__name">演奏会情報</span>
+            <span class="c-menuPanel__arrow">↗</span>
+          </a>
+        </li>
+        <li class="c-menuPanel__item">
+          <a href="#contact" class="c-menuPanel__link">
+            <span class="c-menuPanel__number">04</span>
+            <span class="c-menuPanel__name">NEWS</span>
+            <span class="c-menuPanel__arrow">↗</span>
+          </a>
+        </li>
+      </ul>
+    </nav>
     </section>
-  </main>
+    <div class="c-menuDock">
+    <div class="c-menuDock__label">
+      <span class="c-menuDock__small">NAVIGATION</span>
+      <span class="c-menuDock__title">ページメニュー</span>
+    </div>
+
+    <button
+      type="button"
+      class="c-menuButton"
+      aria-label="メニューを開く"
+      aria-controls="mobileMenu"
+      aria-expanded="false"
+    >
+      <span class="c-menuButton__inner">
+        <span class="c-menuButton__icon" aria-hidden="true">
+          <span class="c-menuButton__line"></span>
+          <span class="c-menuButton__line"></span>
+        </span>
+        <span class="c-menuButton__text">CLOSE</span>
+      </span>
+    </button>
+  </div>
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const menuButton = document.querySelector('.c-menuButton');
+      const menuPanel = document.querySelector('.c-menuPanel');
+      const overlay = document.querySelector('.c-overlay');
+      const links = menuPanel.querySelectorAll('a');
+
+      function setMenuState(isOpen) {
+        menuButton.classList.toggle('is-active', isOpen);
+        menuPanel.classList.toggle('is-active', isOpen);
+        overlay.classList.toggle('is-active', isOpen);
+        document.body.classList.toggle('is-menuOpen', isOpen);
+
+        menuButton.setAttribute('aria-expanded', String(isOpen));
+        menuButton.setAttribute(
+          'aria-label',
+          isOpen ? 'メニューを閉じる' : 'メニューを開く'
+        );
+        menuPanel.setAttribute('aria-hidden', String(!isOpen));
+        overlay.tabIndex = isOpen ? 0 : -1;
+      }
+
+      menuButton.addEventListener('click', function () {
+        const isOpen = menuButton.getAttribute('aria-expanded') !== 'true';
+        setMenuState(isOpen);
+      });
+
+      overlay.addEventListener('click', function () {
+        setMenuState(false);
+      });
+
+      links.forEach(function (link) {
+        link.addEventListener('click', function () {
+          setMenuState(false);
+        });
+      });
+
+      document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape') {
+          setMenuState(false);
+        }
+      });
+    });
+  </script>
 </body>
 </html>
