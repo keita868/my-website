@@ -64,6 +64,34 @@ npx tsc
 
 ```
 
+### 管理画面（開発用）
+
+バックエンドにはNode.js 22以降が必要です。管理者アカウントは一般公開の登録フォームから作らず、最初に次のコマンドで作成してください。
+
+```bash
+# 依存パッケージをインストール
+npm install --prefix backend
+
+# このターミナルで使うセッション秘密鍵を生成（本番では環境変数・シークレット管理機能で設定）
+export CMS_SESSION_SECRET="$(openssl rand -hex 32)"
+
+# 表示名・メールアドレス・パスワードを対話入力（パスワードは画面に表示されません）
+npm --prefix backend run admin:create
+
+# 管理画面を起動
+npm --prefix backend start
+```
+
+`http://localhost:3000/admin/login` からログインできます。SQLiteのDBとセッションは `backend/data/` に作られ、Git管理対象外です。ローカル開発では同じターミナルで秘密鍵を設定して起動してください。本番環境ではHTTPSを必須とし、`NODE_ENV=production` と十分に長い `CMS_SESSION_SECRET` を設定します。TLS終端プロキシ経由で動かす場合に限り `TRUST_PROXY=1` も設定してください。
+
+初回に作成した管理者には`superadmin`権限が付与されます。以後の管理者追加・権限変更は管理画面の「管理者管理」から行います。通常の管理者は自分のプロフィールとパスワードのみ変更できます。DBスキーマは起動時に`backend/migrations/`の追加マイグレーションで更新され、既存の管理者データは保持されます。
+
+バックエンドの認証・管理APIテストは次のコマンドで実行できます。
+
+```bash
+npm --prefix backend test
+```
+
 ---
 
 ## 👥 開発ガイドライン
