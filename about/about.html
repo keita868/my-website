@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="九州工業大学交響楽団の紹介ページです。">
+  <title>楽団について | 九州工業大学交響楽団</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Noto Sans JP", "Yu Gothic", sans-serif;
+      color: #23332f;
+      background: #f5f7f3;
+      font-synthesis: none;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      line-height: 1.8;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .site-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 1.25rem 1.5rem;
+    }
+
+    .site-name {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 700;
+    }
+
+    .site-header a {
+      text-decoration: none;
+    }
+
+    .contact-link {
+      padding: 0.55rem 1rem;
+      border: 1px solid #315e50;
+      border-radius: 999px;
+      color: #315e50;
+      font-size: 0.9rem;
+    }
+
+    main {
+      padding: 0 1.5rem 5rem;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      max-width: 1080px;
+      margin: 1rem auto 0;
+      padding: clamp(3rem, 9vw, 7rem);
+      border-radius: 1.5rem;
+      background: #21483d;
+      color: #fff;
+    }
+
+    .hero::after {
+      position: absolute;
+      right: -4rem;
+      bottom: -9rem;
+      width: 24rem;
+      height: 24rem;
+      border: 1px solid rgb(255 255 255 / 20%);
+      border-radius: 50%;
+      box-shadow: 0 0 0 2rem rgb(255 255 255 / 5%), 0 0 0 4rem rgb(255 255 255 / 5%);
+      content: "";
+    }
+
+    .eyebrow {
+      margin: 0 0 0.75rem;
+      color: #c1d9a8;
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+    }
+
+    h1 {
+      max-width: 14em;
+      margin: 0;
+      font-size: clamp(2.2rem, 6vw, 4.5rem);
+      line-height: 1.25;
+    }
+
+    .hero p:last-child {
+      max-width: 38rem;
+      margin: 1.5rem 0 0;
+      color: #e2ebe4;
+    }
+
+    .content {
+      display: grid;
+      grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+      gap: clamp(2rem, 7vw, 6rem);
+      max-width: 900px;
+      margin: 5rem auto 0;
+    }
+
+    .section-label {
+      margin: 0 0 0.75rem;
+      color: #557967;
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: clamp(1.5rem, 3vw, 2rem);
+      line-height: 1.45;
+    }
+
+    .description p {
+      margin: 0 0 1rem;
+      color: #53615c;
+    }
+
+    .cta {
+      max-width: 900px;
+      margin: 4rem auto 0;
+      padding: 2rem;
+      border-radius: 1rem;
+      background: #e8eee5;
+    }
+
+    .cta h2 {
+      font-size: 1.35rem;
+    }
+
+    .cta p {
+      margin: 0.5rem 0 1rem;
+      color: #53615c;
+    }
+
+    .cta a {
+      color: #21483d;
+      font-weight: 700;
+      text-underline-offset: 0.2em;
+    }
+
+    footer {
+      padding: 1.5rem;
+      color: #6a7771;
+      font-size: 0.85rem;
+      text-align: center;
+    }
+
+    @media (max-width: 640px) {
+      .site-header {
+        padding: 1rem;
+      }
+
+      main {
+        padding: 0 1rem 3rem;
+      }
+
+      .hero {
+        padding: 3rem 1.5rem;
+        border-radius: 1rem;
+      }
+
+      .content {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+        margin-top: 3rem;
+      }
+
+      .cta {
+        margin-top: 3rem;
+        padding: 1.5rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <p class="site-name">九州工業大学交響楽団</p>
+    <a class="contact-link" href="../contact/contact.html">お問い合わせ</a>
+  </header>
+
+  <main>
+    <section class="hero" aria-labelledby="page-title">
+      <p class="eyebrow">ABOUT US</p>
+      <h1 id="page-title">音楽を通して、<br>心をひとつに。</h1>
+      <p>九州工業大学交響楽団は、音楽を愛する仲間とともに活動するオーケストラです。</p>
+    </section>
+
+    <section class="content" aria-labelledby="about-title">
+      <div>
+        <p class="section-label">WHO WE ARE</p>
+        <h2 id="about-title">それぞれの音が、<br>ひとつの響きになる。</h2>
+      </div>
+      <div class="description">
+        <p>楽器も経験もさまざまなメンバーが集まり、互いの音に耳を傾けながら演奏をつくっています。</p>
+        <p>一人では生まれないオーケストラならではの響きを、仲間と一緒に育てていく。それが私たちの活動の魅力です。</p>
+      </div>
+    </section>
+
+    <section class="cta" aria-labelledby="contact-title">
+      <h2 id="contact-title">私たちの活動に興味をお持ちの方へ</h2>
+      <p>お問い合わせやご質問は、こちらからお気軽にご連絡ください。</p>
+      <a href="../contact/contact.html">お問い合わせページへ →</a>
+    </section>
+  </main>
+
+  <footer>
+    <small>&copy; 九州工業大学交響楽団</small>
+  </footer>
+</body>
+</html>
