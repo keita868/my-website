@@ -174,9 +174,14 @@ test('preserves legacy accounts and enforces auth, role, account management, and
   assert.equal(stateChangeWithoutCsrf.response.status, 403);
 
   const ownerCsrf = await csrfFor(ownerCookie);
+  const [firstTabCsrf, secondTabCsrf] = await Promise.all([
+    csrfFor(ownerCookie),
+    csrfFor(ownerCookie)
+  ]);
+  assert.equal(firstTabCsrf.csrf, secondTabCsrf.csrf);
   const created = await request('/api/admins', {
     method: 'POST',
-    cookie: ownerCsrf.cookie,
+    cookie: firstTabCsrf.cookie,
     csrf: ownerCsrf.csrf,
     body: {
       displayName: 'Editor',
@@ -187,6 +192,66 @@ test('preserves legacy accounts and enforces auth, role, account management, and
   });
   assert.equal(created.response.status, 201);
   editorId = created.data.admin.id;
+
+  const createSuperadminCsrf = await csrfFor(ownerCookie);
+  const secondSuperadmin = await request('/api/admins', {
+    method: 'POST',
+    cookie: createSuperadminCsrf.cookie,
+    csrf: createSuperadminCsrf.csrf,
+    body: {
+      displayName: 'Second Superadmin',
+      email: 'second-superadmin@example.test',
+      password: 'second-superadmin-password-2026',
+      role: 'superadmin'
+    }
+  });
+  assert.equal(secondSuperadmin.response.status, 201);
+  const secondSuperadminLogin = await login('second-superadmin@example.test', 'second-superadmin-password-2026');
+  assert.equal(secondSuperadminLogin.response.status, 200);
+
+  const pendingCreations = Array.from({ length: 8 }, (_, index) => request('/api/admins', {
+    method: 'POST',
+    cookie: ownerCookie,
+    csrf: ownerCsrf.csrf,
+    body: {
+      displayName: `Revoked ${index}`,
+      email: `revoked-${index}@example.test`,
+      password: `revoked-password-${index}-2026`,
+      role: 'superadmin'
+    }
+  }));
+  const revokeOwnerCsrf = await csrfFor(secondSuperadminLogin.cookie);
+  const revokeOwner = await request(`/api/admins/${ownerId}`, {
+    method: 'PATCH',
+    cookie: revokeOwnerCsrf.cookie,
+    csrf: revokeOwnerCsrf.csrf,
+    body: { role: 'admin' }
+  });
+  assert.equal(revokeOwner.response.status, 200);
+  const creationResults = await Promise.all(pendingCreations);
+  assert.ok(creationResults.some((result) => result.response.status === 403));
+
+  const restoreOwnerCsrf = await csrfFor(secondSuperadminLogin.cookie);
+  const restoreOwner = await request(`/api/admins/${ownerId}`, {
+    method: 'PATCH',
+    cookie: restoreOwnerCsrf.cookie,
+    csrf: restoreOwnerCsrf.csrf,
+    body: { role: 'superadmin' }
+  });
+  assert.equal(restoreOwner.response.status, 200);
+  const createdDuringRace = creationResults
+    .filter((result) => result.response.status === 201)
+    .map((result) => result.data.admin.id);
+  for (const id of createdDuringRace) {
+    const cleanupCsrf = await csrfFor(secondSuperadminLogin.cookie);
+    const disable = await request(`/api/admins/${id}`, {
+      method: 'PATCH',
+      cookie: cleanupCsrf.cookie,
+      csrf: cleanupCsrf.csrf,
+      body: { isActive: false }
+    });
+    assert.equal(disable.response.status, 200);
+  }
 
   const duplicate = await request('/api/admins', {
     method: 'POST',
@@ -276,6 +341,18 @@ test('preserves legacy accounts and enforces auth, role, account management, and
   });
   assert.equal(disableEditor.response.status, 200);
   assert.equal((await request('/api/auth/me', { cookie: newEditorCookie })).response.status, 401);
+
+  const secondSuperadminRecord = (await request('/api/admins', { cookie: ownerCookie }))
+    .data.admins.find((admin) => admin.email === 'second-superadmin@example.test');
+  const disableSecondSuperadminCsrf = await csrfFor(ownerCookie);
+  const disableSecondSuperadmin = await request(`/api/admins/${secondSuperadminRecord.id}`, {
+    method: 'PATCH',
+    cookie: disableSecondSuperadminCsrf.cookie,
+    csrf: disableSecondSuperadminCsrf.csrf,
+    body: { isActive: false }
+  });
+  assert.equal(disableSecondSuperadmin.response.status, 200);
+  assert.equal((await request('/api/auth/me', { cookie: secondSuperadminLogin.cookie })).response.status, 401);
 
   const selfDisableCsrf = await csrfFor(ownerCookie);
   const selfDisable = await request(`/api/admins/${ownerId}`, {

@@ -83,7 +83,9 @@ app.use('/admin/assets', express.static(path.join(dashboardDirectory, 'assets'),
 }));
 
 function issueCsrfToken(req) {
-  req.session.csrfToken = randomBytes(32).toString('hex');
+  if (typeof req.session.csrfToken !== 'string') {
+    req.session.csrfToken = randomBytes(32).toString('hex');
+  }
   return req.session.csrfToken;
 }
 
@@ -355,15 +357,26 @@ app.post('/api/admins', requireAdmin, requireSuperadmin, requireCsrf, async (req
 
     const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
     try {
-      const result = database.prepare(`
-        INSERT INTO admins (email, password_hash, display_name, role, updated_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-      `).run(email.trim(), passwordHash, displayName.trim(), role);
-      const admin = database.prepare(`
-        SELECT id, email, display_name, role, is_active, created_at, updated_at, last_login_at
-        FROM admins WHERE id = ?
-      `).get(result.lastInsertRowid);
-      res.status(201).json({ admin: publicAdmin(admin) });
+      const createAdmin = database.transaction(() => {
+        const actor = adminById.get(req.admin.id);
+        if (!actor || !actor.is_active || actor.role !== 'superadmin'
+          || actor.session_version !== req.session.adminVersion) {
+          return { error: 'この操作を行う権限がありません。' };
+        }
+
+        const result = database.prepare(`
+          INSERT INTO admins (email, password_hash, display_name, role, updated_at)
+          VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `).run(email.trim(), passwordHash, displayName.trim(), role);
+        const admin = database.prepare(`
+          SELECT id, email, display_name, role, is_active, created_at, updated_at, last_login_at
+          FROM admins WHERE id = ?
+        `).get(result.lastInsertRowid);
+        return { admin };
+      });
+      const result = createAdmin();
+      if (result.error) return res.status(403).json({ error: result.error });
+      res.status(201).json({ admin: publicAdmin(result.admin) });
     } catch (error) {
       if (isUniqueConstraint(error)) {
         return res.status(409).json({ error: 'このメールアドレスはすでに使用されています。' });

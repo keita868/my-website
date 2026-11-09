@@ -83,8 +83,8 @@ try {
   let password;
   while (true) {
     password = await promptHidden('パスワード（12文字以上・入力非表示）: ');
-    if (password.length < 12) {
-      process.stderr.write('パスワードは12文字以上にしてください。\n');
+    if (password.length < 12 || password.length > 1024) {
+      process.stderr.write('パスワードは12文字以上1024文字以下にしてください。\n');
       continue;
     }
 
