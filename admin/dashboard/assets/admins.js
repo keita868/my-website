@@ -4,17 +4,13 @@ const createForm = document.querySelector('#create-form');
 const createError = document.querySelector('#create-error');
 const emailElement = document.querySelector('#admin-email');
 const logoutButton = document.querySelector('#logout-button');
+const retryList = document.querySelector('#admin-list-retry');
+let ready = false;
+let creating = false;
+const savingForms = new WeakSet();
+createForm.inert = true;
 
-async function request(url, options = {}) {
-  const response = await fetch(url, { credentials: 'same-origin', ...options });
-  if (response.status === 401) {
-    window.location.replace('/admin/login');
-    throw new Error('ログインが必要です。');
-  }
-  const data = response.status === 204 ? {} : await response.json();
-  if (!response.ok) throw new Error(data.error || 'リクエストに失敗しました。');
-  return data;
-}
+const request = window.cmsUI.request;
 
 async function csrfHeaders() {
   const { csrfToken } = await request('/api/auth/csrf');
@@ -87,33 +83,70 @@ function createInput(name, labelText, value, type) {
   return label;
 }
 
-async function loadPage() {
-  const [{ admin: me }, { admins }] = await Promise.all([
-    request('/api/auth/me'),
-    request('/api/admins')
-  ]);
-  emailElement.textContent = me.displayName || me.email;
-  const fragment = document.createDocumentFragment();
-  for (const admin of admins) fragment.append(renderAdmin(admin));
-  adminList.replaceChildren(fragment);
+function appendAdminIfMissing(admin) {
+  if (!adminList.querySelector(`.admin-edit-form[data-id="${admin.id}"]`)) {
+    adminList.append(renderAdmin(admin));
+  }
 }
+
+async function loadPage() {
+  const { admin: me } = await request('/api/auth/me');
+  if (me.role !== 'superadmin') throw new Error('管理者を追加する権限がありません。');
+  emailElement.textContent = me.displayName || me.email;
+  ready = true;
+  createForm.inert = false;
+  await loadList();
+}
+
+async function loadList() {
+  if (retryList.disabled) return;
+  retryList.disabled = true;
+  retryList.hidden = true;
+  listError.textContent = '管理者一覧を読み込んでいます…';
+  delete listError.dataset.success;
+  try {
+    const { admins } = await request('/api/admins');
+    // Keep local edits and rows added while this request was pending.
+    for (const admin of admins) {
+      appendAdminIfMissing(admin);
+    }
+    listError.textContent = '';
+  } catch (error) {
+    listError.textContent = `${error.message} 管理者一覧を読み込めませんでした。再試行してください。`;
+    retryList.hidden = false;
+  } finally {
+    retryList.disabled = false;
+  }
+}
+retryList.addEventListener('click', loadList);
 
 createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!ready || creating) return;
+  creating = true;
+  createForm.inert = true;
+  createForm.setAttribute('aria-busy', 'true');
   createError.textContent = '';
+  delete createError.dataset.success;
   const button = createForm.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
-    await request('/api/admins', {
+    const fields = Object.fromEntries(new FormData(createForm));
+    const { admin } = await request('/api/admins', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...await csrfHeaders() },
-      body: JSON.stringify(Object.fromEntries(new FormData(createForm)))
+      body: JSON.stringify(fields)
     });
     createForm.reset();
-    await loadPage();
+    appendAdminIfMissing(admin);
+    createError.dataset.success = '';
+    createError.textContent = '管理者を追加しました。';
   } catch (error) {
     createError.textContent = error.message;
   } finally {
+    creating = false;
+    createForm.inert = false;
+    createForm.removeAttribute('aria-busy');
     button.disabled = false;
   }
 });
@@ -122,12 +155,17 @@ adminList.addEventListener('submit', async (event) => {
   if (!event.target.matches('.admin-edit-form')) return;
   event.preventDefault();
   const form = event.target;
+  if (savingForms.has(form)) return;
+  savingForms.add(form);
+  form.inert = true;
+  form.setAttribute('aria-busy', 'true');
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
   listError.textContent = '';
+  delete listError.dataset.success;
   try {
     const fields = new FormData(form);
-    await request(`/api/admins/${form.dataset.id}`, {
+    const { admin } = await request(`/api/admins/${form.dataset.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...await csrfHeaders() },
       body: JSON.stringify({
@@ -137,10 +175,15 @@ adminList.addEventListener('submit', async (event) => {
         isActive: fields.get('isActive') === 'on'
       })
     });
-    await loadPage();
+    form.closest('.admin-row').replaceWith(renderAdmin(admin));
+    listError.dataset.success = '';
+    listError.textContent = '変更を保存しました。';
   } catch (error) {
     listError.textContent = error.message;
   } finally {
+    savingForms.delete(form);
+    form.inert = false;
+    form.removeAttribute('aria-busy');
     button.disabled = false;
   }
 });
@@ -155,5 +198,5 @@ logoutButton.addEventListener('click', async () => {
 });
 
 loadPage().catch((error) => {
-  listError.textContent = error.message;
+  listError.textContent = `${error.message} 管理者一覧を読み込めませんでした。画面を再読み込みしてください。`;
 });

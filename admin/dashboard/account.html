@@ -6,6 +6,7 @@
   <meta name="robots" content="noindex, nofollow">
   <title>アカウント設定 | 九州工業大学交響楽団</title>
   <link rel="stylesheet" href="/admin/assets/dashboard.css">
+  <script src="/admin/assets/ui.js" defer></script>
   <script src="/admin/assets/account.js" defer></script>
 </head>
 <body class="dashboard-page">
@@ -36,16 +37,17 @@
     </section>
     <section class="panel account-panel" aria-labelledby="profile-title">
       <h2 id="profile-title">プロフィール</h2>
-      <form id="profile-form" class="account-form">
+      <form id="profile-form" class="account-form" method="post" action="/api/auth/me">
         <label>表示名<input name="displayName" required maxlength="80"></label>
         <label>メールアドレス<input name="email" type="email" required maxlength="254"></label>
         <button class="primary-button" type="submit">プロフィールを保存</button>
       </form>
       <p class="form-error" id="profile-message" role="status" aria-live="polite"></p>
+      <button id="profile-retry" class="secondary-button" type="button" hidden>読み込みを再試行</button>
     </section>
     <section class="panel account-panel" aria-labelledby="password-title">
       <h2 id="password-title">パスワード変更</h2>
-      <form id="password-form" class="account-form">
+      <form id="password-form" class="account-form" method="post" action="/api/auth/change-password">
         <label>現在のパスワード<input name="currentPassword" type="password" required autocomplete="current-password"></label>
         <label>新しいパスワード（12文字以上）<input name="newPassword" type="password" required minlength="12" autocomplete="new-password"></label>
         <button class="primary-button" type="submit">パスワードを変更</button>

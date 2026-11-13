@@ -5,53 +5,83 @@ const passwordMessage = document.querySelector('#password-message');
 const emailElement = document.querySelector('#admin-email');
 const adminsLink = document.querySelector('#admins-nav');
 const logoutButton = document.querySelector('#logout-button');
+const retryProfile = document.querySelector('#profile-retry');
+let ready = false;
+let loading = false;
+let profileSaving = false;
+let passwordSaving = false;
+profileForm.inert = true;
+passwordForm.inert = true;
 
-async function request(url, options = {}) {
-  const response = await fetch(url, { credentials: 'same-origin', ...options });
-  if (response.status === 401) {
-    window.location.replace('/admin/login');
-    throw new Error('ログインが必要です。');
-  }
-  const data = response.status === 204 ? {} : await response.json();
-  if (!response.ok) throw new Error(data.error || 'リクエストに失敗しました。');
-  return data;
-}
+const request = window.cmsUI.request;
 
 async function csrfHeaders() {
   const { csrfToken } = await request('/api/auth/csrf');
   return { 'X-CSRF-Token': csrfToken };
 }
 
-async function loadProfile() {
-  const { admin } = await request('/api/auth/me');
+function renderProfile(admin) {
   emailElement.textContent = admin.displayName || admin.email;
   adminsLink.hidden = admin.role !== 'superadmin';
   profileForm.elements.displayName.value = admin.displayName || '';
   profileForm.elements.email.value = admin.email;
 }
 
+async function loadProfile() {
+  if (loading) return;
+  loading = true;
+  retryProfile.hidden = true;
+  profileMessage.textContent = 'プロフィールを読み込んでいます…';
+  try {
+    const { admin } = await request('/api/auth/me');
+    renderProfile(admin);
+    ready = true;
+    profileForm.inert = false;
+    passwordForm.inert = false;
+    profileMessage.textContent = '';
+  } catch (error) {
+    profileMessage.textContent = `${error.message} 読み込みを再試行してください。`;
+    retryProfile.hidden = false;
+  } finally {
+    loading = false;
+  }
+}
+retryProfile.addEventListener('click', loadProfile);
+
 profileForm.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!ready || profileSaving) return;
+  profileSaving = true;
+  const body = JSON.stringify(Object.fromEntries(new FormData(profileForm)));
+  profileForm.inert = true;
   profileMessage.textContent = '';
+  delete profileMessage.dataset.success;
   const button = profileForm.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
-    await request('/api/auth/me', {
+    const { admin } = await request('/api/auth/me', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...await csrfHeaders() },
-      body: JSON.stringify(Object.fromEntries(new FormData(profileForm)))
+      body
     });
-    await loadProfile();
+    renderProfile(admin);
     profileMessage.textContent = 'プロフィールを保存しました。';
+    profileMessage.dataset.success = '';
   } catch (error) {
     profileMessage.textContent = error.message;
   } finally {
     button.disabled = false;
+    profileSaving = false;
+    profileForm.inert = false;
   }
 });
 
 passwordForm.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!ready || passwordSaving) return;
+  passwordSaving = true;
+  const body = JSON.stringify(Object.fromEntries(new FormData(passwordForm)));
+  passwordForm.inert = true;
   passwordMessage.textContent = '';
   const button = passwordForm.querySelector('button[type="submit"]');
   button.disabled = true;
@@ -59,12 +89,15 @@ passwordForm.addEventListener('submit', async (event) => {
     await request('/api/auth/change-password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...await csrfHeaders() },
-      body: JSON.stringify(Object.fromEntries(new FormData(passwordForm)))
+      body
     });
     window.location.replace('/admin/login');
   } catch (error) {
     passwordMessage.textContent = error.message;
     button.disabled = false;
+  } finally {
+    passwordSaving = false;
+    passwordForm.inert = false;
   }
 });
 
@@ -77,6 +110,4 @@ logoutButton.addEventListener('click', async () => {
   }
 });
 
-loadProfile().catch((error) => {
-  profileMessage.textContent = error.message;
-});
+loadProfile();

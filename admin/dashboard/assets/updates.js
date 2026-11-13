@@ -4,17 +4,35 @@ const updatesMessage = document.querySelector('#updates-message');
 const emailElement = document.querySelector('#admin-email');
 const adminsLink = document.querySelector('#admins-nav');
 const logoutButton = document.querySelector('#logout-button');
+const searchInput = document.querySelector('#update-search');
+const statusInput = document.querySelector('#update-status');
+const updateCount = document.querySelector('#update-count');
+let allUpdates = null;
+updateCount.textContent = '投稿を読み込んでいます…';
 
-async function request(url, options = {}) {
-  const response = await fetch(url, { credentials: 'same-origin', ...options });
-  if (response.status === 401) {
-    window.location.replace('/admin/login');
-    throw new Error('ログインが必要です。');
+function renderList() {
+  if (allUpdates === null) return;
+  const query = searchInput.value.trim().toLocaleLowerCase('ja-JP');
+  const updates = allUpdates.filter((update) => {
+    const status = update.status === 'published' ? 'published' : update.scheduledAt ? 'scheduled' : 'draft';
+    return (statusInput.value === 'all' || statusInput.value === status)
+      && `${update.title}\n${update.body}`.toLocaleLowerCase('ja-JP').includes(query);
+  });
+  updateCount.textContent = `${allUpdates.length}件中 ${updates.length}件を表示`;
+  if (updates.length) {
+    updateList.replaceChildren(...updates.map(renderUpdate));
+  } else {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = allUpdates.length ? '条件に一致する投稿がありません。検索語や状態を変更してください。' : '投稿はまだありません。「新規投稿」から作成できます。';
+    updateList.replaceChildren(empty);
   }
-  const data = response.status === 204 ? {} : await response.json();
-  if (!response.ok) throw new Error(data.error || 'リクエストに失敗しました。');
-  return data;
 }
+
+searchInput.addEventListener('input', renderList);
+statusInput.addEventListener('change', renderList);
+
+const request = window.cmsUI.request;
 
 async function csrfHeaders() {
   const { csrfToken } = await request('/api/auth/csrf');
@@ -132,14 +150,8 @@ async function loadPage() {
   emailElement.textContent = admin.displayName || admin.email;
   adminsLink.hidden = admin.role !== 'superadmin';
 
-  if (updates.length === 0) {
-    const empty = document.createElement('p');
-    empty.className = 'empty-state';
-    empty.textContent = '投稿はまだありません。';
-    updateList.replaceChildren(empty);
-    return;
-  }
-  updateList.replaceChildren(...updates.map(renderUpdate));
+  allUpdates = updates;
+  renderList();
 }
 
 updateList.addEventListener('click', async (event) => {
@@ -195,5 +207,6 @@ if (result.get('created') === '1') {
 }
 
 loadPage().catch((error) => {
+  if (allUpdates === null) updateCount.textContent = '投稿を読み込めませんでした。';
   updatesError.textContent = error.message;
 });

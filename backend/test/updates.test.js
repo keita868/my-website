@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import net from 'node:net';
 import os from 'node:os';
@@ -36,11 +36,12 @@ function cookieFrom(response, fallback = '') {
   return response.headers.get('set-cookie')?.split(';', 1)[0] || fallback;
 }
 
-async function request(pathname, { method = 'GET', cookie = '', csrf, body, forwardedFor } = {}) {
+async function request(pathname, { method = 'GET', cookie = '', csrf, body, forwardedFor, expectedRevision } = {}) {
   const headers = {};
   if (cookie) headers.Cookie = cookie;
   if (csrf) headers['X-CSRF-Token'] = csrf;
   if (forwardedFor) headers['X-Forwarded-For'] = forwardedFor;
+  if (expectedRevision !== undefined) headers['X-Update-Revision'] = String(expectedRevision);
   const isFormData = body instanceof FormData;
   if (body !== undefined && !isFormData) headers['Content-Type'] = 'application/json';
   const response = await fetch(`${origin}${pathname}`, {
@@ -515,6 +516,7 @@ test('rejects create and edit writes when the admin session is revoked during fi
   }
 
   async function slowMultipartRequest(pathname, method, editor, formFields, onPaused) {
+    assert.deepEqual(readdirSync(path.join(dataDirectory, 'uploads', '.tmp')), []);
     const boundary = `cms-test-${randomUUID()}`;
     const prefix = Object.entries(formFields).map(([name, value]) => (
       `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`
@@ -532,6 +534,7 @@ test('rejects create and edit writes when the admin session is revoked during fi
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(Buffer.from(prefix));
+        controller.enqueue(attachment.subarray(0, 6));
         sentPrefix = true;
       },
       async pull(controller) {
@@ -539,7 +542,7 @@ test('rejects create and edit writes when the admin session is revoked during fi
         sentFile = true;
         signalPaused();
         await uploadMayContinue;
-        controller.enqueue(attachment);
+        controller.enqueue(attachment.subarray(6));
         controller.enqueue(suffix);
         controller.close();
       }
@@ -556,8 +559,16 @@ test('rejects create and edit writes when the admin session is revoked during fi
       redirect: 'manual'
     });
     await uploadIsPaused;
-    await onPaused();
-    releaseUpload();
+    try {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (readdirSync(path.join(dataDirectory, 'uploads', '.tmp')).length > 0) break;
+        await delay(20);
+      }
+      assert.ok(readdirSync(path.join(dataDirectory, 'uploads', '.tmp')).length > 0);
+      await onPaused();
+    } finally {
+      releaseUpload();
+    }
     return responsePromise;
   }
 
@@ -627,6 +638,32 @@ test('rejects create and edit writes when the admin session is revoked during fi
   );
   assert.equal(editResponse.status, 401);
 
+  await createEditor('Logout Race', 'logout-race@example.test');
+  for (const method of ['POST', 'PATCH']) {
+    const freshLogin = await loginAs('logout-race@example.test', 'editor-revocation-password-2026');
+    const editor = { cookie: freshLogin.cookie, csrf: await csrfFor(freshLogin.cookie) };
+    const logoutResponse = await slowMultipartRequest(
+      method === 'POST' ? '/api/admin/updates' : `/api/admin/updates/${editTarget.data.update.id}`,
+      method,
+      editor,
+      { type: 'news', title: 'logged out upload', body: 'must not persist', ...(method === 'POST' ? { status: 'draft' } : {}) },
+      async () => {
+        const result = await request('/api/auth/logout', {
+          method: 'POST', cookie: editor.cookie, csrf: editor.csrf.csrf
+        });
+        assert.equal(result.response.status, 204);
+      }
+    );
+    assert.equal(logoutResponse.status, 401);
+    assert.equal((await request('/api/auth/me', { cookie: editor.cookie })).response.status, 401);
+    assert.deepEqual(readdirSync(path.join(dataDirectory, 'uploads', '.tmp')), []);
+    const db = new Database(path.join(dataDirectory, 'cms.sqlite'));
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM updates WHERE title = ?').get('logged out upload').count, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM update_attachments WHERE update_id = ?')
+      .get(editTarget.data.update.id).count, 0);
+    db.close();
+  }
+
   const verifyDatabase = new Database(path.join(dataDirectory, 'cms.sqlite'));
   const unchanged = verifyDatabase.prepare('SELECT title, body FROM updates WHERE id = ?')
     .get(editTarget.data.update.id);
@@ -686,6 +723,142 @@ test('rejects create and edit writes when the admin session is revoked during fi
     .get(scheduledTarget.data.update.id).count, 0);
   postConflictDatabase.close();
   verifyDatabase.close();
+});
+
+test('preserves Japanese attachment names and download names', async () => {
+  const authenticated = await login();
+  assert.equal(authenticated.response.status, 200);
+  const csrf = await csrfFor(authenticated.cookie);
+  const form = new FormData();
+  form.set('type', 'notice');
+  form.set('title', '日本語添付名');
+  form.set('body', '添付した名前を保持します。');
+  form.set('status', 'draft');
+  form.append('attachments', new Blob(['%PDF-1.4\n'], { type: 'application/pdf' }), '演奏会のご案内.pdf');
+  const created = await request('/api/admin/updates', { method: 'POST', ...csrf, body: form });
+  assert.equal(created.response.status, 201);
+  const attachment = created.data.update.attachments[0];
+  assert.equal(attachment.originalName, '演奏会のご案内.pdf');
+  const downloaded = await request(attachment.url, { cookie: authenticated.cookie });
+  assert.equal(downloaded.response.status, 200);
+  assert.equal(downloaded.response.headers.get('content-disposition'), `attachment; filename*=UTF-8''${encodeURIComponent('演奏会のご案内.pdf')}`);
+  const revision = created.data.update.revision;
+  const removed = await request(`/api/admin/updates/${created.data.update.id}/attachments/${attachment.id}`, { method: 'DELETE', ...csrf });
+  assert.equal(removed.response.status, 204);
+  const current = await request(`/api/admin/updates/${created.data.update.id}`, { cookie: authenticated.cookie });
+  assert.equal(current.data.update.revision, revision);
+});
+
+test('rejects stale edit revisions after another edit or publication state change', async () => {
+  const authenticated = await login();
+  assert.equal(authenticated.response.status, 200);
+  const csrf = await csrfFor(authenticated.cookie);
+  const created = await request('/api/admin/updates', {
+    method: 'POST', ...csrf, body: { type: 'news', title: 'Original', body: 'Original body', status: 'draft' }
+  });
+  assert.equal(created.response.status, 201);
+  const id = created.data.update.id;
+  const path = `/api/admin/updates/${id}`;
+  const firstTab = await request(path, { cookie: authenticated.cookie });
+  const secondTab = await request(path, { cookie: authenticated.cookie });
+  assert.equal(firstTab.data.update.revision, 0);
+  assert.equal(secondTab.data.update.revision, 0);
+  const edit = { type: 'news', title: 'First tab saved', body: 'New content' };
+  for (const invalid of ['-1', '1.5', '01', 'invalid', '9007199254740992']) {
+    assert.equal((await request(path, { method: 'PATCH', ...csrf, expectedRevision: invalid, body: edit })).response.status, 400);
+  }
+  const saved = await request(path, { method: 'PATCH', ...csrf, expectedRevision: firstTab.data.update.revision, body: edit });
+  assert.equal(saved.response.status, 200);
+  assert.equal(saved.data.update.revision, 1);
+  const staleForm = new FormData();
+  staleForm.set('type', 'news');
+  staleForm.set('title', 'Stale tab');
+  staleForm.set('body', 'Must not overwrite');
+  staleForm.append('attachments', new Blob([Buffer.from('R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=', 'base64')], { type: 'image/gif' }), 'stale.gif');
+  const uploadsBefore = readdirSync(pathJoinUploads());
+  const stale = await request(path, { method: 'PATCH', ...csrf, expectedRevision: secondTab.data.update.revision, body: staleForm });
+  assert.equal(stale.response.status, 409);
+  assert.deepEqual(readdirSync(pathJoinUploads()), uploadsBefore);
+  assert.deepEqual(readdirSync(pathJoinUploads('.tmp')), []);
+  const unchanged = await request(path, { cookie: authenticated.cookie });
+  assert.equal(unchanged.data.update.title, 'First tab saved');
+  assert.equal(unchanged.data.update.attachments.length, 0);
+  const latest = await request(path, { method: 'PATCH', ...csrf, expectedRevision: 1, body: { ...edit, title: 'Latest saved' } });
+  assert.equal(latest.response.status, 200);
+  assert.equal(latest.data.update.revision, 2);
+  const published = await request(`${path}/publish`, { method: 'POST', ...csrf });
+  assert.equal(published.data.update.revision, 3);
+  assert.equal((await request(path, { method: 'PATCH', ...csrf, expectedRevision: 2, body: edit })).response.status, 409);
+  const withdrawn = await request(`${path}/unpublish`, { method: 'POST', ...csrf });
+  assert.equal(withdrawn.data.update.revision, 4);
+  assert.equal((await request(path, { method: 'PATCH', ...csrf, expectedRevision: 3, body: edit })).response.status, 409);
+  // Older API clients can still omit the optional precondition.
+  assert.equal((await request(path, { method: 'PATCH', ...csrf, body: edit })).response.status, 200);
+  const list = await request('/api/admin/updates', { cookie: authenticated.cookie });
+  assert.equal(list.data.updates.find((update) => update.id === id).revision, 5);
+});
+
+function pathJoinUploads(...segments) {
+  return path.join(dataDirectory, 'uploads', ...segments);
+}
+
+test('scheduled publication advances the revision and rejects a stale draft edit', async () => {
+  const authenticated = await login();
+  assert.equal(authenticated.response.status, 200);
+  const csrf = await csrfFor(authenticated.cookie);
+  const created = await request('/api/admin/updates', {
+    method: 'POST', ...csrf, body: { type: 'notice', title: 'Scheduled revision', body: 'Content', status: 'scheduled', scheduledAt: futureJstDateTime() }
+  });
+  assert.equal(created.response.status, 201);
+  const id = created.data.update.id;
+  const db = new Database(path.join(dataDirectory, 'cms.sqlite'));
+  db.prepare('UPDATE updates SET scheduled_at = ? WHERE id = ?').run(new Date(Date.now() - 1000).toISOString(), id);
+  db.close();
+  let current;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    current = await request(`/api/admin/updates/${id}`, { cookie: authenticated.cookie });
+    if (current.data.update.status === 'published') break;
+    await delay(100);
+  }
+  assert.equal(current.data.update.status, 'published');
+  assert.equal(current.data.update.revision, created.data.update.revision + 1);
+  assert.equal((await request(`/api/admin/updates/${id}`, {
+    method: 'PATCH', ...csrf, expectedRevision: created.data.update.revision, body: { type: 'notice', title: 'Stale', body: 'Stale' }
+  })).response.status, 409);
+});
+
+test('revision migration preserves existing update and attachment data', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'cms-revision-migration-test-'));
+  try {
+    const old = new Database(path.join(directory, 'cms.sqlite'));
+    old.exec(`
+      CREATE TABLE admins (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL COLLATE NOCASE UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+      CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+      INSERT INTO admins (email, password_hash) VALUES ('legacy@example.test', 'existing-hash');
+    `);
+    for (const name of ['001_admin_management.sql', '002_updates.sql', '003_update_scheduling_and_attachments.sql']) {
+      old.exec(readFileSync(path.join(backendDirectory, 'migrations', name), 'utf8'));
+      old.prepare('INSERT INTO schema_migrations (name) VALUES (?)').run(name);
+    }
+    old.exec(`
+      INSERT INTO updates (id, type, title, body, status, created_by, updated_by, created_at, updated_at)
+      VALUES (1, 'news', 'Legacy title', 'Legacy body', 'draft', 1, 1, '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z');
+      INSERT INTO update_attachments (update_id, stored_name, original_name, mime_type, size, created_at)
+      VALUES (1, 'legacy.pdf', 'Legacy.pdf', 'application/pdf', 10, '2026-11-01T00:00:00.000Z');
+    `);
+    old.close();
+    const migration = spawnSync(process.execPath, ['--input-type=module', '-e', "import { database } from './src/database.js'; database.close();"], {
+      cwd: backendDirectory, env: { ...process.env, CMS_DATA_DIR: directory }, encoding: 'utf8'
+    });
+    assert.equal(migration.status, 0, migration.stderr);
+    const migrated = new Database(path.join(directory, 'cms.sqlite'));
+    assert.deepEqual(migrated.prepare('SELECT title, body, revision FROM updates WHERE id = 1').get(), { title: 'Legacy title', body: 'Legacy body', revision: 0 });
+    assert.equal(migrated.prepare('SELECT original_name FROM update_attachments WHERE update_id = 1').get().original_name, 'Legacy.pdf');
+    assert.equal(migrated.prepare('SELECT password_hash FROM admins WHERE id = 1').get().password_hash, 'existing-hash');
+    migrated.close();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('limits failed login attempts by account across client IP addresses', async () => {

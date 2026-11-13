@@ -4,13 +4,7 @@ const errorElement = document.querySelector('#dashboard-error');
 const adminsLink = document.querySelector('#admins-nav');
 
 async function loadSession() {
-  const response = await fetch('/api/auth/session', { credentials: 'same-origin' });
-  if (response.status === 401) {
-    window.location.replace('/admin/login');
-    return;
-  }
-  if (!response.ok) throw new Error('管理者情報を読み込めませんでした。');
-  const { admin } = await response.json();
+  const { admin } = await window.cmsUI.request('/api/auth/session');
   emailElement.textContent = admin.displayName || admin.email;
   adminsLink.hidden = admin.role !== 'superadmin';
 }

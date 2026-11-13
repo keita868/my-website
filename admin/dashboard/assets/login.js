@@ -9,17 +9,14 @@ async function loadCsrfToken() {
   csrfToken = data.csrfToken;
 }
 
-try {
-  await loadCsrfToken();
-} catch (error) {
-  errorMessage.textContent = error.message;
-}
-
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   errorMessage.textContent = '';
   const submitButton = form.querySelector('button[type="submit"]');
+  if (submitButton.disabled) return;
   submitButton.disabled = true;
+  submitButton.textContent = 'ログイン中…';
+  form.setAttribute('aria-busy', 'true');
 
   try {
     if (!csrfToken) await loadCsrfToken();
@@ -42,5 +39,7 @@ form.addEventListener('submit', async (event) => {
     errorMessage.textContent = error.message;
   } finally {
     submitButton.disabled = false;
+    submitButton.textContent = 'ログイン';
+    form.removeAttribute('aria-busy');
   }
 });

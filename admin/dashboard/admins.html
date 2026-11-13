@@ -6,6 +6,7 @@
   <meta name="robots" content="noindex, nofollow">
   <title>管理者管理 | 九州工業大学交響楽団</title>
   <link rel="stylesheet" href="/admin/assets/dashboard.css">
+  <script src="/admin/assets/ui.js" defer></script>
   <script src="/admin/assets/admins.js" defer></script>
 </head>
 <body class="dashboard-page">
@@ -36,7 +37,7 @@
     </section>
     <section class="panel" aria-labelledby="create-title">
       <h2 id="create-title">管理者を追加</h2>
-      <form id="create-form" class="admin-create-form">
+      <form id="create-form" class="admin-create-form" method="post" action="/api/admins">
         <label>表示名<input name="displayName" required maxlength="80"></label>
         <label>メールアドレス<input name="email" type="email" required maxlength="254"></label>
         <label>初期パスワード<input name="password" type="password" required minlength="12" autocomplete="new-password"></label>
@@ -53,6 +54,7 @@
     <section class="panel" aria-labelledby="list-title">
       <h2 id="list-title">登録済み管理者</h2>
       <p class="form-error" id="list-error" role="alert" aria-live="polite"></p>
+      <button class="secondary-button" id="admin-list-retry" type="button" hidden>一覧の読み込みを再試行</button>
       <div class="admin-list" id="admin-list" aria-live="polite"></div>
     </section>
   </main>

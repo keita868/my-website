@@ -15,6 +15,7 @@ chmodSync(uploadDirectory, 0o700);
 chmodSync(temporaryDirectory, 0o700);
 
 export const attachmentUpload = multer({
+  defParamCharset: 'utf8',
   storage: multer.diskStorage({
     destination: temporaryDirectory,
     filename: (_req, _file, callback) => callback(null, randomUUID())
