@@ -308,22 +308,28 @@ test('preserves legacy accounts and enforces auth, role, account management, and
     csrf: profileCsrf.csrf,
     body: { currentPassword: 'incorrect-password', newPassword: passwordAfterChange }
   });
-  assert.equal(wrongCurrentPassword.response.status, 401);
+  assert.equal(wrongCurrentPassword.response.status, 400);
+  assert.equal((await request('/api/auth/me', { cookie: wrongCurrentPassword.cookie })).response.status, 200);
 
   const passwordChangeCsrf = await csrfFor(editorCookie);
-  const passwordChange = await request('/api/auth/change-password', {
+  const competingPasswords = [passwordAfterChange, 'another-changed-password-2026'];
+  const competingPasswordChanges = await Promise.all(competingPasswords.map((newPassword) => request('/api/auth/change-password', {
     method: 'POST',
     cookie: passwordChangeCsrf.cookie,
     csrf: passwordChangeCsrf.csrf,
-    body: { currentPassword: adminPassword, newPassword: passwordAfterChange }
-  });
-  assert.equal(passwordChange.response.status, 204);
+    body: { currentPassword: adminPassword, newPassword }
+  })));
+  const winningPasswordIndex = competingPasswordChanges.findIndex(({ response }) => response.status === 204);
+  assert.notEqual(winningPasswordIndex, -1);
+  assert.equal(competingPasswordChanges.filter(({ response }) => response.status === 204).length, 1);
+  assert.equal(competingPasswordChanges.filter(({ response }) => response.status === 401).length, 1);
+  const changedPassword = competingPasswords[winningPasswordIndex];
   assert.equal((await request('/api/auth/me', { cookie: editorCookie })).response.status, 401);
   assert.equal((await request('/api/auth/me', { cookie: secondEditorLogin.cookie })).response.status, 401);
 
   const oldPasswordLogin = await login('editor-updated@example.test', adminPassword);
   assert.equal(oldPasswordLogin.response.status, 401);
-  const newPasswordLogin = await login('editor-updated@example.test', passwordAfterChange);
+  const newPasswordLogin = await login('editor-updated@example.test', changedPassword);
   assert.equal(newPasswordLogin.response.status, 200);
   const newEditorCookie = newPasswordLogin.cookie;
   const adminDatabase = new Database(path.join(dataDirectory, 'cms.sqlite'));
@@ -372,7 +378,7 @@ test('preserves legacy accounts and enforces auth, role, account management, and
   });
   assert.equal(lastSuperadminDemotion.response.status, 409);
 
-  const disabledLogin = await login('editor-updated@example.test', passwordAfterChange);
+  const disabledLogin = await login('editor-updated@example.test', changedPassword);
   assert.equal(disabledLogin.response.status, 401);
 
   const logoutCsrf = await csrfFor(ownerCookie);

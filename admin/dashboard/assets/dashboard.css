@@ -6,7 +6,7 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --accent: #874b36;
-  --muted: #827e79;
+  --muted: #6f6a65;
   --line: #e9e6e1;
 }
 
@@ -151,6 +151,8 @@ button:disabled { cursor: wait; opacity: .65; }
 
 .notice-card p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
 
+.dashboard-action { display: inline-flex; align-items: center; margin-top: 16px; text-decoration: none; }
+
 .dashboard-main > .form-error { margin-top: 15px; }
 
 .panel {
@@ -228,6 +230,91 @@ button:disabled { cursor: wait; opacity: .65; }
 
 .help-text { margin: 0; line-height: 1.7; }
 
+.updates-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+
+.updates-toolbar h2 { margin: 0; }
+
+.update-list { display: grid; gap: 14px; }
+
+.update-row { padding: 18px; border: 1px solid var(--line); border-radius: 5px; }
+
+.update-row-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+
+.update-row h3 { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+
+.update-badges { display: flex; flex: 0 0 auto; gap: 7px; }
+
+.update-badge { padding: 4px 8px; border-radius: 20px; background: #f5efec; color: var(--accent); font-size: 10px; }
+
+.update-badge[data-status="published"] { background: #edf4ed; color: #35653d; }
+
+.update-badge[data-status="scheduled"] { background: #fff3da; color: #825a15; }
+
+.update-body { margin: 14px 0; color: #4f4a45; font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.update-dates { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--muted); font-size: 10px; }
+
+.update-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+
+.update-attachments { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+
+.update-attachment { display: grid; width: min(140px, 100%); gap: 5px; color: var(--accent); font-size: 10px; overflow-wrap: anywhere; text-decoration: none; }
+
+.update-attachment img { width: 100%; height: 92px; border: 1px solid var(--line); border-radius: 4px; background: #faf9f7; object-fit: cover; }
+
+.danger-button { min-height: 36px; padding: 0 14px; border: 1px solid #e3c9c6; border-radius: 5px; background: #fff; color: #a52e28; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; }
+
+.danger-button:hover { background: #fff6f5; }
+
+.update-form { display: grid; max-width: 760px; gap: 18px; }
+
+.update-form [hidden] { display: none; }
+
+.update-form label { display: grid; gap: 8px; margin: 0; font-size: 12px; font-weight: 600; }
+
+.update-form input, .update-form select, .update-form textarea {
+  width: 100%;
+  margin: 0;
+  padding: 11px 12px;
+  border: 1px solid #dedbd6;
+  border-radius: 5px;
+  outline: none;
+  background: #fff;
+  color: #242323;
+  font: inherit;
+  font-size: 13px;
+}
+
+.update-form input, .update-form select { height: 44px; padding-top: 0; padding-bottom: 0; }
+
+.update-form textarea { min-height: 240px; line-height: 1.8; resize: vertical; }
+
+.update-form input:focus, .update-form select:focus, .update-form textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgb(135 75 54 / 10%); }
+
+.attachment-field { display: grid; gap: 8px; }
+
+.attachment-field > label { font-size: 12px; font-weight: 600; }
+
+.attachment-field > input[type="file"] { height: auto; padding: 10px; }
+
+.attachment-field > .help-text { margin: 0; }
+
+.attachment-list { display: grid; gap: 8px; }
+
+.attachment-item { display: flex; align-items: center; gap: 12px; padding: 9px; border: 1px solid var(--line); border-radius: 5px; font-size: 11px; }
+
+.attachment-item img { width: 80px; height: 60px; border-radius: 3px; object-fit: cover; }
+
+.attachment-item a { flex: 1; overflow-wrap: anywhere; }
+
+.update-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+
+.update-submit-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.update-form .primary-button, .update-form .secondary-button { min-width: 130px; padding: 0 16px; }
+
+.empty-state { padding: 28px 16px; border: 1px dashed #d8d2cb; border-radius: 5px; color: var(--muted); font-size: 12px; text-align: center; }
+
 @media (max-width: 700px) {
   .auth-card { padding: 35px 26px 28px; }
   .sidebar { position: static; width: auto; padding: 17px 20px; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -241,4 +328,11 @@ button:disabled { cursor: wait; opacity: .65; }
   .admin-create-form, .admin-edit-fields { grid-template-columns: 1fr; }
   .admin-create-form .primary-button { grid-column: auto; width: 100%; }
   .admin-row-actions { align-items: flex-start; flex-direction: column; }
+  .updates-toolbar, .update-row-header { align-items: flex-start; flex-direction: column; }
+  .updates-toolbar .secondary-button { width: 100%; }
+  .update-actions { align-items: stretch; flex-direction: column; }
+  .update-submit-actions { flex-direction: column; }
+  .update-submit-actions button, .update-actions > .secondary-button { width: 100%; }
+  .update-row-actions { justify-content: stretch; }
+  .update-row-actions > * { flex: 1; }
 }

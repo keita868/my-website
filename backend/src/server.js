@@ -1,3 +1,4 @@
+import { createReadStream } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,13 @@ import { rateLimit } from 'express-rate-limit';
 import session from 'express-session';
 import helmet from 'helmet';
 import { dataDirectory, database } from './database.js';
+import {
+  attachmentPath,
+  attachmentUpload,
+  cleanupTemporaryFiles,
+  deleteStoredAttachment,
+  persistAttachments
+} from './update-files.js';
 
 const app = express();
 const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -51,7 +59,7 @@ function publicAdmin(admin) {
 
 app.disable('x-powered-by');
 app.use(helmet());
-app.use(express.json({ limit: '10kb' }));
+app.use(express.json({ limit: '32kb' }));
 app.use(session({
   name: 'cms.sid',
   secret: sessionSecret,
@@ -188,6 +196,125 @@ function countActiveSuperadmins() {
   `).get().count;
 }
 
+const updateSelect = `
+  SELECT id, type, title, body, status, published_at AS publishedAt,
+    scheduled_at AS scheduledAt, created_by AS createdBy, updated_by AS updatedBy,
+    created_at AS createdAt, updated_at AS updatedAt
+  FROM updates
+`;
+
+function updateWithAttachments(update) {
+  if (!update) return null;
+  const attachments = database.prepare(`
+    SELECT id, original_name AS originalName, mime_type AS mimeType,
+      size, created_at AS createdAt
+    FROM update_attachments
+    WHERE update_id = ?
+    ORDER BY id
+  `).all(update.id).map((attachment) => ({
+    ...attachment,
+    url: `/api/admin/updates/attachments/${attachment.id}/file`
+  }));
+  return { ...update, attachments };
+}
+
+function getUpdate(updateId) {
+  return updateWithAttachments(database.prepare(`${updateSelect} WHERE id = ?`).get(updateId));
+}
+
+function getUpdates() {
+  const rows = database.prepare(`
+    SELECT u.id, u.type, u.title, u.body, u.status,
+      u.published_at AS publishedAt, u.scheduled_at AS scheduledAt,
+      u.created_by AS createdBy, u.updated_by AS updatedBy,
+      u.created_at AS createdAt, u.updated_at AS updatedAt,
+      a.id AS attachmentId, a.original_name AS originalName,
+      a.mime_type AS mimeType, a.size AS attachmentSize,
+      a.created_at AS attachmentCreatedAt
+    FROM updates u
+    LEFT JOIN update_attachments a ON a.update_id = u.id
+    ORDER BY u.created_at DESC, u.id DESC, a.id
+  `).all();
+  const updatesById = new Map();
+  for (const row of rows) {
+    let update = updatesById.get(row.id);
+    if (!update) {
+      update = {
+        id: row.id,
+        type: row.type,
+        title: row.title,
+        body: row.body,
+        status: row.status,
+        publishedAt: row.publishedAt,
+        scheduledAt: row.scheduledAt,
+        createdBy: row.createdBy,
+        updatedBy: row.updatedBy,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        attachments: []
+      };
+      updatesById.set(row.id, update);
+    }
+    if (row.attachmentId !== null) {
+      update.attachments.push({
+        id: row.attachmentId,
+        originalName: row.originalName,
+        mimeType: row.mimeType,
+        size: row.attachmentSize,
+        createdAt: row.attachmentCreatedAt,
+        url: `/api/admin/updates/attachments/${row.attachmentId}/file`
+      });
+    }
+  }
+  return [...updatesById.values()];
+}
+
+function parseJstDateTime(value) {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  const [, yearText, monthText, dayText, hourText, minuteText] = match;
+  const [year, month, day, hour, minute] = [yearText, monthText, dayText, hourText, minuteText].map(Number);
+  const localTime = Date.UTC(year, month - 1, day, hour, minute);
+  const check = new Date(localTime);
+  if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month - 1
+    || check.getUTCDate() !== day || check.getUTCHours() !== hour || check.getUTCMinutes() !== minute) {
+    return null;
+  }
+  const scheduledAt = new Date(localTime - 9 * 60 * 60 * 1000);
+  if (scheduledAt.getTime() <= Date.now()) return null;
+  return scheduledAt.toISOString();
+}
+
+function receiveAttachments(req, res, next) {
+  attachmentUpload.array('attachments', 5)(req, res, (error) => {
+    if (error) {
+      error.status = [
+        'LIMIT_FILE_SIZE',
+        'LIMIT_FILE_COUNT',
+        'LIMIT_FIELD_VALUE',
+        'LIMIT_PART_COUNT'
+      ].includes(error.code) ? 413 : 400;
+      return next(error);
+    }
+    next();
+  });
+}
+
+function removeSavedAttachments(attachments) {
+  for (const attachment of attachments) deleteStoredAttachment(attachment.storedName);
+}
+
+function processScheduledUpdates() {
+  const now = new Date().toISOString();
+  const publishDueUpdates = database.prepare(`
+    UPDATE updates
+    SET status = 'published', published_at = ?, scheduled_at = NULL, updated_at = ?
+    WHERE status = 'draft' AND scheduled_at IS NOT NULL AND scheduled_at <= ?
+  `);
+  publishDueUpdates.run(now, now, now);
+}
+
 function authMe(req, res) {
   res.json({ admin: publicAdmin(req.admin) });
 }
@@ -220,6 +347,18 @@ app.get('/admin/admins', requirePageAdmin, requirePageSuperadmin, (_req, res) =>
 
 app.get('/admin/account', requirePageAdmin, (_req, res) => {
   res.sendFile(path.join(dashboardDirectory, 'account.html'));
+});
+
+app.get('/admin/updates', requirePageAdmin, (_req, res) => {
+  res.sendFile(path.join(dashboardDirectory, 'updates.html'));
+});
+
+app.get('/admin/updates/new', requirePageAdmin, (_req, res) => {
+  res.sendFile(path.join(dashboardDirectory, 'update-create.html'));
+});
+
+app.get('/admin/updates/:id/edit', requirePageAdmin, (_req, res) => {
+  res.sendFile(path.join(dashboardDirectory, 'update-create.html'));
 });
 
 app.get('/api/auth/csrf', (req, res) => {
@@ -301,15 +440,28 @@ app.post('/api/auth/change-password', requireAdmin, requireCsrf, async (req, res
 
     const account = database.prepare('SELECT password_hash FROM admins WHERE id = ?').get(req.admin.id);
     if (!await argon2.verify(account.password_hash, currentPassword)) {
-      return res.status(401).json({ error: '現在のパスワードが正しくありません。' });
+      return res.status(400).json({ error: '現在のパスワードが正しくありません。' });
     }
 
     const passwordHash = await argon2.hash(newPassword, { type: argon2.argon2id });
-    database.prepare(`
+    const updatePassword = database.transaction(() => database.prepare(`
       UPDATE admins
       SET password_hash = ?, session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).run(passwordHash, req.admin.id);
+      WHERE id = ? AND is_active = 1 AND session_version = ? AND password_hash = ?
+    `).run(passwordHash, req.admin.id, req.admin.session_version, account.password_hash));
+    const update = updatePassword();
+    if (update.changes !== 1) {
+      return req.session.destroy((error) => {
+        if (error) return next(error);
+        res.clearCookie('cms.sid', {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'strict',
+          path: '/'
+        });
+        res.status(401).json({ error: 'ログイン状態が更新されました。再ログインしてください。' });
+      });
+    }
 
     req.session.destroy((error) => {
       if (error) return next(error);
@@ -464,6 +616,279 @@ app.patch('/api/admins/:id', requireAdmin, requireSuperadmin, requireCsrf, (req,
   res.json({ admin: publicAdmin(admin) });
 });
 
+app.get('/api/admin/updates', requireAdmin, (_req, res) => {
+  res.json({ updates: getUpdates() });
+});
+
+app.get('/api/admin/updates/attachments/:attachmentId/file', requireAdmin, (req, res, next) => {
+  const attachmentId = Number(req.params.attachmentId);
+  if (!Number.isSafeInteger(attachmentId) || attachmentId < 1) {
+    return res.status(400).json({ error: '添付ファイルIDが正しくありません。' });
+  }
+  const attachment = database.prepare(`
+    SELECT stored_name AS storedName, original_name AS originalName, mime_type AS mimeType
+    FROM update_attachments WHERE id = ?
+  `).get(attachmentId);
+  if (!attachment) return res.status(404).json({ error: '添付ファイルが見つかりません。' });
+
+  const disposition = attachment.mimeType.startsWith('image/') ? 'inline' : 'attachment';
+  const encodedName = encodeURIComponent(attachment.originalName).replace(/['()*]/g, (character) => (
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  ));
+  res.set({
+    'Content-Type': attachment.mimeType,
+    'Content-Disposition': `${disposition}; filename*=UTF-8''${encodedName}`,
+    'X-Content-Type-Options': 'nosniff'
+  });
+  createReadStream(attachmentPath(attachment.storedName))
+    .on('error', next)
+    .pipe(res);
+});
+
+app.get('/api/admin/updates/:id', requireAdmin, (req, res) => {
+  const updateId = Number(req.params.id);
+  if (!Number.isSafeInteger(updateId) || updateId < 1) {
+    return res.status(400).json({ error: '投稿IDが正しくありません。' });
+  }
+  const update = getUpdate(updateId);
+  if (!update) return res.status(404).json({ error: '投稿が見つかりません。' });
+  res.json({ update });
+});
+
+app.post('/api/admin/updates/:id/publish', requireAdmin, requireCsrf, (req, res) => {
+  const updateId = Number(req.params.id);
+  if (!Number.isSafeInteger(updateId) || updateId < 1) {
+    return res.status(400).json({ error: '投稿IDが正しくありません。' });
+  }
+
+  const now = new Date().toISOString();
+  const publish = database.prepare(`
+    UPDATE updates
+    SET status = 'published', published_at = ?, scheduled_at = NULL, updated_at = ?, updated_by = ?
+    WHERE id = ? AND status = 'draft'
+  `).run(now, now, req.admin.id, updateId);
+  if (publish.changes !== 1) {
+    const existing = database.prepare('SELECT status FROM updates WHERE id = ?').get(updateId);
+    if (!existing) return res.status(404).json({ error: '投稿が見つかりません。' });
+    return res.status(409).json({ error: 'この投稿は下書きではないため、公開できません。' });
+  }
+
+  const update = database.prepare(`
+    SELECT id, type, title, body, status, published_at AS publishedAt,
+      scheduled_at AS scheduledAt, created_by AS createdBy, updated_by AS updatedBy,
+      created_at AS createdAt, updated_at AS updatedAt
+    FROM updates WHERE id = ?
+  `).get(updateId);
+  res.json({ success: true, update: updateWithAttachments(update) });
+});
+
+app.post('/api/admin/updates/:id/unpublish', requireAdmin, requireCsrf, (req, res) => {
+  const updateId = Number(req.params.id);
+  if (!Number.isSafeInteger(updateId) || updateId < 1) {
+    return res.status(400).json({ error: '投稿IDが正しくありません。' });
+  }
+  const now = new Date().toISOString();
+  const result = database.prepare(`
+    UPDATE updates
+    SET status = 'draft', published_at = NULL, scheduled_at = NULL, updated_at = ?, updated_by = ?
+    WHERE id = ? AND status = 'published'
+  `).run(now, req.admin.id, updateId);
+  if (result.changes !== 1) {
+    const existing = database.prepare('SELECT id FROM updates WHERE id = ?').get(updateId);
+    if (!existing) return res.status(404).json({ error: '投稿が見つかりません。' });
+    return res.status(409).json({ error: '公開中の投稿ではありません。' });
+  }
+  res.json({ success: true, update: getUpdate(updateId) });
+});
+
+app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachments, async (req, res, next) => {
+  const updateId = Number(req.params.id);
+  if (!Number.isSafeInteger(updateId) || updateId < 1) {
+    cleanupTemporaryFiles(req.files);
+    return res.status(400).json({ error: '投稿IDが正しくありません。' });
+  }
+  const existing = database.prepare('SELECT status FROM updates WHERE id = ?').get(updateId);
+  if (!existing) {
+    cleanupTemporaryFiles(req.files);
+    return res.status(404).json({ error: '投稿が見つかりません。' });
+  }
+  const { type, title, body, scheduledAt: scheduledAtInput = '' } = req.body ?? {};
+  if (!['news', 'notice'].includes(type)
+    || typeof title !== 'string'
+    || title.trim().length === 0
+    || title.trim().length > 200
+    || typeof body !== 'string'
+    || body.trim().length === 0
+    || body.trim().length > 5000
+    || typeof scheduledAtInput !== 'string') {
+    cleanupTemporaryFiles(req.files);
+    return res.status(400).json({ error: '種別、タイトル（1〜200文字）、本文（1〜5000文字）を確認してください。' });
+  }
+
+  let scheduledAt = null;
+  if (existing.status === 'published' && scheduledAtInput) {
+    cleanupTemporaryFiles(req.files);
+    return res.status(400).json({ error: '公開済み投稿を予約状態には変更できません。先に公開を取り下げてください。' });
+  }
+  if (existing.status === 'draft' && scheduledAtInput) {
+    scheduledAt = parseJstDateTime(scheduledAtInput);
+    if (!scheduledAt) {
+      cleanupTemporaryFiles(req.files);
+      return res.status(400).json({ error: '予約日時は現在より後の日本時間で指定してください。' });
+    }
+  }
+
+  let savedAttachments = [];
+  try {
+    const attachmentCount = database.prepare('SELECT COUNT(*) AS count FROM update_attachments WHERE update_id = ?')
+      .get(updateId).count;
+    savedAttachments = await persistAttachments(req.files || [], attachmentCount);
+    const now = new Date().toISOString();
+    const saveUpdate = database.transaction(() => {
+      const currentAttachmentCount = database.prepare(`
+        SELECT COUNT(*) AS count FROM update_attachments WHERE update_id = ?
+      `).get(updateId).count;
+      if (currentAttachmentCount + savedAttachments.length > 5) {
+        const error = new Error('添付ファイルは1投稿につき最大5件です。');
+        error.status = 400;
+        throw error;
+      }
+      database.prepare(`
+        UPDATE updates
+        SET type = ?, title = ?, body = ?, scheduled_at = ?, updated_at = ?, updated_by = ?
+        WHERE id = ?
+      `).run(type, title.trim(), body.trim(), scheduledAt, now, req.admin.id, updateId);
+      const insertAttachment = database.prepare(`
+        INSERT INTO update_attachments (update_id, stored_name, original_name, mime_type, size, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      for (const attachment of savedAttachments) {
+        insertAttachment.run(
+          updateId,
+          attachment.storedName,
+          attachment.originalName,
+          attachment.mimeType,
+          attachment.size,
+          now
+        );
+      }
+    });
+    saveUpdate();
+    res.json({ success: true, update: getUpdate(updateId) });
+  } catch (error) {
+    cleanupTemporaryFiles(req.files);
+    if (savedAttachments.length > 0) removeSavedAttachments(savedAttachments);
+    next(error);
+  }
+});
+
+app.delete('/api/admin/updates/:id/attachments/:attachmentId', requireAdmin, requireCsrf, (req, res) => {
+  const updateId = Number(req.params.id);
+  const attachmentId = Number(req.params.attachmentId);
+  if (!Number.isSafeInteger(updateId) || updateId < 1
+    || !Number.isSafeInteger(attachmentId) || attachmentId < 1) {
+    return res.status(400).json({ error: '投稿IDまたは添付ファイルIDが正しくありません。' });
+  }
+  const attachment = database.prepare(`
+    SELECT stored_name AS storedName
+    FROM update_attachments WHERE id = ? AND update_id = ?
+  `).get(attachmentId, updateId);
+  if (!attachment) return res.status(404).json({ error: '添付ファイルが見つかりません。' });
+  database.prepare('DELETE FROM update_attachments WHERE id = ?').run(attachmentId);
+  deleteStoredAttachment(attachment.storedName);
+  res.status(204).end();
+});
+
+app.delete('/api/admin/updates/:id', requireAdmin, requireCsrf, (req, res) => {
+  const updateId = Number(req.params.id);
+  if (!Number.isSafeInteger(updateId) || updateId < 1) {
+    return res.status(400).json({ error: '投稿IDが正しくありません。' });
+  }
+  const attachments = database.prepare(`
+    SELECT stored_name AS storedName FROM update_attachments WHERE update_id = ?
+  `).all(updateId);
+  const result = database.prepare('DELETE FROM updates WHERE id = ?').run(updateId);
+  if (result.changes !== 1) return res.status(404).json({ error: '投稿が見つかりません。' });
+  removeSavedAttachments(attachments);
+  res.status(204).end();
+});
+
+app.post('/api/admin/updates', requireAdmin, requireCsrf, receiveAttachments, async (req, res, next) => {
+  const { type, title, body, status, scheduledAt: scheduledAtInput = '' } = req.body ?? {};
+  if (!['news', 'notice'].includes(type)
+    || !['draft', 'published', 'scheduled'].includes(status)
+    || typeof title !== 'string'
+    || title.trim().length === 0
+    || title.trim().length > 200
+    || typeof body !== 'string'
+    || body.trim().length === 0
+    || body.trim().length > 5000
+    || typeof scheduledAtInput !== 'string') {
+    cleanupTemporaryFiles(req.files);
+    return res.status(400).json({ error: '種別、タイトル（1〜200文字）、本文（1〜5000文字）、公開方法を確認してください。' });
+  }
+
+  let scheduledAt = null;
+  if (status === 'scheduled') {
+    scheduledAt = parseJstDateTime(scheduledAtInput);
+    if (!scheduledAt) {
+      cleanupTemporaryFiles(req.files);
+      return res.status(400).json({ error: '予約日時は現在より後の日本時間で指定してください。' });
+    }
+  } else if (scheduledAtInput) {
+    cleanupTemporaryFiles(req.files);
+    return res.status(400).json({ error: '予約日時は予約公開を選んだ場合のみ指定できます。' });
+  }
+
+  let savedAttachments = [];
+  try {
+    savedAttachments = await persistAttachments(req.files || []);
+    const now = new Date().toISOString();
+    const updateStatus = status === 'published' ? 'published' : 'draft';
+    const publishedAt = status === 'published' ? now : null;
+    const createUpdate = database.transaction(() => {
+      const result = database.prepare(`
+        INSERT INTO updates (
+          type, title, body, status, published_at, scheduled_at,
+          created_by, updated_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        type,
+        title.trim(),
+        body.trim(),
+        updateStatus,
+        publishedAt,
+        scheduledAt,
+        req.admin.id,
+        req.admin.id,
+        now,
+        now
+      );
+      const insertAttachment = database.prepare(`
+        INSERT INTO update_attachments (update_id, stored_name, original_name, mime_type, size, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      for (const attachment of savedAttachments) {
+        insertAttachment.run(
+          result.lastInsertRowid,
+          attachment.storedName,
+          attachment.originalName,
+          attachment.mimeType,
+          attachment.size,
+          now
+        );
+      }
+      return Number(result.lastInsertRowid);
+    });
+    const updateId = createUpdate();
+    res.status(201).json({ success: true, update: getUpdate(updateId) });
+  } catch (error) {
+    cleanupTemporaryFiles(req.files);
+    if (savedAttachments.length > 0) removeSavedAttachments(savedAttachments);
+    next(error);
+  }
+});
+
 app.post('/api/auth/logout', requireCsrf, (req, res, next) => {
   req.session.destroy((error) => {
     if (error) return next(error);
@@ -484,11 +909,27 @@ app.use('/api', (_req, res) => {
 app.use((error, _req, res, _next) => {
   process.stderr.write(`${error.stack || error}\n`);
   if (res.headersSent) return;
-  const status = error.status === 400 ? 400 : 500;
+  const status = error.status === 400 ? 400 : error.status === 413 ? 413 : 500;
   res.status(status).json({
-    error: status === 400 ? 'リクエストの形式が正しくありません。' : 'サーバーエラーが発生しました。'
+    error: status === 400
+      ? 'リクエストの形式が正しくありません。'
+      : status === 413
+        ? 'リクエストが大きすぎます。'
+        : 'サーバーエラーが発生しました。'
   });
 });
+
+function publishScheduledUpdates() {
+  try {
+    processScheduledUpdates();
+  } catch (error) {
+    process.stderr.write(`予約投稿を公開できませんでした: ${error.stack || error}\n`);
+  }
+}
+
+publishScheduledUpdates();
+const scheduler = setInterval(publishScheduledUpdates, 1000);
+scheduler.unref();
 
 const port = Number(process.env.PORT || 3000);
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
