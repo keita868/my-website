@@ -37,7 +37,7 @@
     </section>
     <section class="panel" aria-labelledby="create-title">
       <h2 id="create-title">管理者を追加</h2>
-      <form id="create-form" class="admin-create-form">
+      <form id="create-form" class="admin-create-form" method="post" action="/api/admins">
         <label>表示名<input name="displayName" required maxlength="80"></label>
         <label>メールアドレス<input name="email" type="email" required maxlength="254"></label>
         <label>初期パスワード<input name="password" type="password" required minlength="12" autocomplete="new-password"></label>

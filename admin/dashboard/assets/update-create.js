@@ -13,6 +13,8 @@ const editUpdateId = editMatch?.[1];
 let existingAttachmentCount = 0;
 let dirty = false;
 let saving = false;
+let loadedRevision = null;
+let deletingAttachment = false;
 const selectedAttachments = document.querySelector('#selected-attachments');
 const loadError = document.querySelector('#editor-load-error');
 const retryLoad = document.querySelector('#editor-retry');
@@ -112,6 +114,7 @@ async function loadUpdate(options = {}) {
   if (!editUpdateId) return;
   const { update } = await request(`/api/admin/updates/${editUpdateId}`, options);
   if (options.signal?.aborted) return;
+  loadedRevision = Number.isSafeInteger(update.revision) ? update.revision : null;
   pageTitle.textContent = '投稿を編集';
   pageDescription.textContent = '投稿内容と添付ファイルを編集できます。';
   document.title = '投稿を編集 | 九州工業大学交響楽団';
@@ -121,12 +124,10 @@ async function loadUpdate(options = {}) {
   for (const field of [updateForm.elements.title, updateForm.elements.body]) field.dispatchEvent(new Event('change'));
   dirty = false;
 
-  if (update.status === 'published') {
-    scheduleField.hidden = true;
-  } else if (update.scheduledAt) {
-    updateForm.elements.scheduledAt.value = new Date(update.scheduledAt)
-      .toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace(' ', 'T').slice(0, 16);
-  }
+  scheduleField.hidden = update.status === 'published';
+  updateForm.elements.scheduledAt.value = update.scheduledAt
+    ? new Date(update.scheduledAt).toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace(' ', 'T').slice(0, 16)
+    : '';
   updateForm.querySelectorAll('button[name="status"]').forEach((button) => { button.hidden = true; });
   if (!updateForm.querySelector('#edit-save-button')) {
     const saveButton = document.createElement('button');
@@ -141,7 +142,7 @@ async function loadUpdate(options = {}) {
 
 updateForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (!ready || saving || !validateAttachments()) {
+  if (!ready || saving || deletingAttachment || !validateAttachments()) {
     attachmentInput.reportValidity();
     return;
   }
@@ -172,6 +173,7 @@ updateForm.addEventListener('submit', async (event) => {
   try {
     const headers = await csrfHeaders();
     if (editUpdateId) {
+      if (loadedRevision !== null) headers['X-Update-Revision'] = String(loadedRevision);
       await request(`/api/admin/updates/${editUpdateId}`, {
         method: 'PATCH',
         headers,
@@ -205,34 +207,23 @@ updateForm.addEventListener('submit', async (event) => {
 
 attachmentList.addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-attachment-id]');
-  if (!button || !window.confirm('この添付ファイルを削除しますか？')) return;
+  if (!button || saving || deletingAttachment || !window.confirm('この添付ファイルを削除しますか？')) return;
+  deletingAttachment = true;
   button.disabled = true;
   updateError.textContent = '';
-  const formValues = {
-    type: updateForm.elements.type.value,
-    title: updateForm.elements.title.value,
-    body: updateForm.elements.body.value,
-    scheduledAt: updateForm.elements.scheduledAt.value
-  };
-  const wasDirty = dirty;
   updateForm.inert = true;
   try {
     await request(`/api/admin/updates/${editUpdateId}/attachments/${button.dataset.attachmentId}`, {
       method: 'DELETE',
       headers: await csrfHeaders()
     });
-    await loadUpdate();
-    updateForm.elements.type.value = formValues.type;
-    updateForm.elements.title.value = formValues.title;
-    updateForm.elements.body.value = formValues.body;
-    updateForm.elements.scheduledAt.value = formValues.scheduledAt;
-    dirty = wasDirty;
-    for (const field of [updateForm.elements.title, updateForm.elements.body]) field.dispatchEvent(new Event('change'));
-    dirty = wasDirty;
+    const { update } = await request(`/api/admin/updates/${editUpdateId}`);
+    renderAttachments(update.attachments);
   } catch (error) {
     updateError.textContent = error.message;
     button.disabled = false;
   } finally {
+    deletingAttachment = false;
     updateForm.inert = false;
   }
 });

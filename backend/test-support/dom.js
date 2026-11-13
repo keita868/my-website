@@ -2,6 +2,19 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 
+const clearedSelects = new WeakSet();
+
+function selectedOptions(select) {
+  const selected = [...select.querySelectorAll('option[selected]')];
+  const multiple = select.hasAttribute('multiple');
+  if (selected.length) return multiple ? selected : [selected.at(-1)];
+  if (multiple || clearedSelects.has(select) || Number(select.getAttribute('size') || 1) > 1) return [];
+  const fallback = [...select.querySelectorAll('option')].find((option) => (
+    !option.hasAttribute('disabled') && !option.closest('optgroup[disabled]')
+  ));
+  return fallback ? [fallback] : [];
+}
+
 export function deferred() {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -20,12 +33,14 @@ export function page(name, request) {
   Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
     configurable: true,
     get() {
-      const selected = this.querySelector('option[selected]');
-      const fallback = this.hasAttribute('multiple') ? null : this.querySelector('option:not([disabled]):not(optgroup[disabled] option)');
-      return (selected || fallback)?.value || '';
+      return selectedOptions(this)[0]?.value || '';
     },
     set(value) {
-      for (const option of this.querySelectorAll('option')) option.toggleAttribute('selected', option.value === value);
+      const options = [...this.querySelectorAll('option')];
+      const firstMatch = options.find((option) => option.value === String(value));
+      for (const option of options) option.toggleAttribute('selected', option === firstMatch);
+      if (firstMatch) clearedSelects.delete(this);
+      else clearedSelects.add(this);
     }
   });
   for (const input of document.querySelectorAll('input[type="file"]')) {
@@ -39,11 +54,15 @@ export function page(name, request) {
       if (form) for (const field of form.querySelectorAll('input[name], textarea[name], select[name]')) {
         if (field.disabled) continue;
         if (['checkbox', 'radio'].includes(field.type) && !(field.checked ?? field.hasAttribute('checked'))) continue;
-        if (field.type === 'file') {
+        if (['checkbox', 'radio'].includes(field.type)) {
+          this.append(field.name, field.hasAttribute('value') ? field.value : 'on');
+        } else if (field.type === 'file') {
           const files = [...(field.files || [])];
           for (const file of files.length ? files : [new File([], '', { type: 'application/octet-stream' })]) this.append(field.name, file);
-        } else if (field.tagName === 'SELECT' && field.hasAttribute('multiple')) {
-          for (const option of field.querySelectorAll('option[selected]:not([disabled])')) this.append(field.name, option.value);
+        } else if (field.tagName === 'SELECT') {
+          for (const option of selectedOptions(field)) {
+            if (!option.hasAttribute('disabled') && !option.closest('optgroup[disabled]')) this.append(field.name, option.value);
+          }
         } else {
           this.append(field.name, field.value || '');
         }

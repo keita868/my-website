@@ -197,7 +197,7 @@ function countActiveSuperadmins() {
 }
 
 const updateSelect = `
-  SELECT id, type, title, body, status, published_at AS publishedAt,
+  SELECT id, type, title, body, status, revision, published_at AS publishedAt,
     scheduled_at AS scheduledAt, created_by AS createdBy, updated_by AS updatedBy,
     created_at AS createdAt, updated_at AS updatedAt
   FROM updates
@@ -224,7 +224,7 @@ function getUpdate(updateId) {
 
 function getUpdates() {
   const rows = database.prepare(`
-    SELECT u.id, u.type, u.title, u.body, u.status,
+    SELECT u.id, u.type, u.title, u.body, u.status, u.revision,
       u.published_at AS publishedAt, u.scheduled_at AS scheduledAt,
       u.created_by AS createdBy, u.updated_by AS updatedBy,
       u.created_at AS createdAt, u.updated_at AS updatedAt,
@@ -245,6 +245,7 @@ function getUpdates() {
         title: row.title,
         body: row.body,
         status: row.status,
+        revision: row.revision,
         publishedAt: row.publishedAt,
         scheduledAt: row.scheduledAt,
         createdBy: row.createdBy,
@@ -309,7 +310,7 @@ function processScheduledUpdates() {
   const now = new Date().toISOString();
   const publishDueUpdates = database.prepare(`
     UPDATE updates
-    SET status = 'published', published_at = ?, scheduled_at = NULL, updated_at = ?
+    SET status = 'published', published_at = ?, scheduled_at = NULL, updated_at = ?, revision = revision + 1
     WHERE status = 'draft' AND scheduled_at IS NOT NULL AND scheduled_at <= ?
   `);
   publishDueUpdates.run(now, now, now);
@@ -694,7 +695,7 @@ app.post('/api/admin/updates/:id/publish', requireAdmin, requireCsrf, (req, res)
   const now = new Date().toISOString();
   const publish = database.prepare(`
     UPDATE updates
-    SET status = 'published', published_at = ?, scheduled_at = NULL, updated_at = ?, updated_by = ?
+    SET status = 'published', published_at = ?, scheduled_at = NULL, updated_at = ?, updated_by = ?, revision = revision + 1
     WHERE id = ? AND status = 'draft'
   `).run(now, now, req.admin.id, updateId);
   if (publish.changes !== 1) {
@@ -704,7 +705,7 @@ app.post('/api/admin/updates/:id/publish', requireAdmin, requireCsrf, (req, res)
   }
 
   const update = database.prepare(`
-    SELECT id, type, title, body, status, published_at AS publishedAt,
+    SELECT id, type, title, body, status, revision, published_at AS publishedAt,
       scheduled_at AS scheduledAt, created_by AS createdBy, updated_by AS updatedBy,
       created_at AS createdAt, updated_at AS updatedAt
     FROM updates WHERE id = ?
@@ -720,7 +721,7 @@ app.post('/api/admin/updates/:id/unpublish', requireAdmin, requireCsrf, (req, re
   const now = new Date().toISOString();
   const result = database.prepare(`
     UPDATE updates
-    SET status = 'draft', published_at = NULL, scheduled_at = NULL, updated_at = ?, updated_by = ?
+    SET status = 'draft', published_at = NULL, scheduled_at = NULL, updated_at = ?, updated_by = ?, revision = revision + 1
     WHERE id = ? AND status = 'published'
   `).run(now, req.admin.id, updateId);
   if (result.changes !== 1) {
@@ -737,10 +738,23 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachment
     cleanupTemporaryFiles(req.files);
     return res.status(400).json({ error: '投稿IDが正しくありません。' });
   }
-  const existing = database.prepare('SELECT status, updated_at AS updatedAt FROM updates WHERE id = ?').get(updateId);
+  const revisionHeader = req.get('x-update-revision');
+  let expectedRevision;
+  if (revisionHeader !== undefined) {
+    expectedRevision = Number(revisionHeader);
+    if (!/^(0|[1-9]\d*)$/.test(revisionHeader) || !Number.isSafeInteger(expectedRevision)) {
+      cleanupTemporaryFiles(req.files);
+      return res.status(400).json({ error: '投稿の版が正しくありません。画面を再読み込みしてください。' });
+    }
+  }
+  const existing = database.prepare('SELECT status, revision FROM updates WHERE id = ?').get(updateId);
   if (!existing) {
     cleanupTemporaryFiles(req.files);
     return res.status(404).json({ error: '投稿が見つかりません。' });
+  }
+  if (expectedRevision !== undefined && expectedRevision !== existing.revision) {
+    cleanupTemporaryFiles(req.files);
+    return res.status(409).json({ error: '投稿が別の操作で変更されています。入力内容を控えてから画面を再読み込みしてください。' });
   }
   const { type, title, body, scheduledAt: scheduledAtInput = '' } = req.body ?? {};
   if (!['news', 'notice'].includes(type)
@@ -780,10 +794,10 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachment
         return { error: 'unauthorized' };
       }
       const currentUpdate = database.prepare(`
-        SELECT status, updated_at AS updatedAt FROM updates WHERE id = ?
+        SELECT status, revision FROM updates WHERE id = ?
       `).get(updateId);
       if (!currentUpdate || currentUpdate.status !== existing.status
-        || currentUpdate.updatedAt !== existing.updatedAt
+        || currentUpdate.revision !== existing.revision
         || (scheduledAt && currentUpdate.status !== 'draft')) {
         return { error: 'conflict' };
       }
@@ -797,8 +811,8 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachment
       }
       const updateResult = database.prepare(`
         UPDATE updates
-        SET type = ?, title = ?, body = ?, scheduled_at = ?, updated_at = ?, updated_by = ?
-        WHERE id = ? AND status = ? AND updated_at = ?
+        SET type = ?, title = ?, body = ?, scheduled_at = ?, updated_at = ?, updated_by = ?, revision = revision + 1
+        WHERE id = ? AND status = ? AND revision = ?
       `).run(
         type,
         title.trim(),
@@ -808,7 +822,7 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachment
         actor.id,
         updateId,
         currentUpdate.status,
-        currentUpdate.updatedAt
+        currentUpdate.revision
       );
       if (updateResult.changes !== 1) return { error: 'conflict' };
       const insertAttachment = database.prepare(`

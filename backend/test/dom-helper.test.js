@@ -22,3 +22,66 @@ test('form fixture uses explicit selection, checked radios, multiple selections 
   assert.equal(data.get('emptyFile').size, 0);
   assert.equal(data.get('emptyFile').name, '');
 });
+
+test('clearing a select omits it from FormData until an option is selected', () => {
+  const fixture = page('account');
+  const form = fixture.document.createElement('form');
+  form.innerHTML = '<select name="choice"><option value="a">A</option><option value="b">B</option></select>';
+  fixture.document.body.append(form);
+  const select = form.querySelector('select');
+  assert.equal(select.value, 'a');
+  assert.equal(new fixture.FormData(form).get('choice'), 'a');
+  for (const missing of ['', 'missing']) {
+    select.value = missing;
+    assert.equal(select.value, '');
+    assert.equal(new fixture.FormData(form).has('choice'), false);
+    select.value = 'b';
+    assert.equal(select.value, 'b');
+    assert.equal(new fixture.FormData(form).get('choice'), 'b');
+  }
+  const empty = fixture.document.createElement('option');
+  empty.value = '';
+  select.append(empty);
+  select.value = '';
+  assert.deepEqual(new fixture.FormData(form).getAll('choice'), ['']);
+});
+
+test('assigning a duplicate value selects only the first option in single and multiple selects', () => {
+  const fixture = page('account');
+  for (const multiple of [false, true]) {
+    const form = fixture.document.createElement('form');
+    form.innerHTML = `<select name="choice" ${multiple ? 'multiple' : ''}><option value="a">First</option><option value="a">Second</option><option value="b" selected>B</option></select>`;
+    fixture.document.body.append(form);
+    const select = form.querySelector('select');
+    select.value = 'a';
+    assert.equal(select.querySelectorAll('option[selected]').length, 1);
+    assert.equal(select.querySelector('option[selected]'), select.querySelector('option'));
+    assert.deepEqual(new fixture.FormData(form).getAll('choice'), ['a']);
+  }
+});
+
+test('checked checkbox and radio defaults use on while explicit empty values and unchecked states are preserved', () => {
+  const fixture = page('account');
+  for (const type of ['checkbox', 'radio']) {
+    const form = fixture.document.createElement('form');
+    form.innerHTML = `<input type="${type}" name="default" checked>
+      <input type="${type}" name="empty" value="" checked>
+      <input type="${type}" name="custom" value="yes" checked>
+      <input type="${type}" name="unchecked">
+      <input type="${type}" name="changed" checked>`;
+    fixture.document.body.append(form);
+    form.querySelector('[name="changed"]').checked = false;
+    const dynamic = fixture.document.createElement('input');
+    dynamic.type = type;
+    dynamic.name = 'dynamic';
+    dynamic.checked = true;
+    form.append(dynamic);
+    const data = new fixture.FormData(form);
+    assert.equal(data.get('default'), 'on');
+    assert.equal(data.get('empty'), '');
+    assert.equal(data.get('custom'), 'yes');
+    assert.equal(data.get('dynamic'), 'on');
+    assert.equal(data.has('unchecked'), false);
+    assert.equal(data.has('changed'), false);
+  }
+});

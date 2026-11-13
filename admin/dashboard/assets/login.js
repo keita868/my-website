@@ -9,12 +9,6 @@ async function loadCsrfToken() {
   csrfToken = data.csrfToken;
 }
 
-try {
-  await loadCsrfToken();
-} catch (error) {
-  errorMessage.textContent = error.message;
-}
-
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   errorMessage.textContent = '';

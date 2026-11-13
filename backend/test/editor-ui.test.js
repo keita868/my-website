@@ -102,10 +102,16 @@ test('admin creation waits for permissions and a new row survives late list load
   fixture.event(form, 'submit');
   await flush();
   assert.equal(writes, 1);
-  pending.resolve({ admins: [{ id: 1, displayName: 'Owner', email: 'owner@example.test', role: 'superadmin' }, { id: 2, displayName: 'New' }] });
+  const createdRow = fixture.document.querySelector('.admin-edit-form[data-id="2"]');
+  assert.ok(createdRow);
+  assert.equal(createdRow.querySelector('input[name="displayName"]').value, 'New');
+  pending.resolve({ admins: [{ id: 1, displayName: 'Owner', email: 'owner@example.test', role: 'superadmin' }, { id: 2, displayName: 'Stale name' }] });
   await flush();
   assert.equal(fixture.document.querySelectorAll('.admin-row').length, 2);
   assert.ok(fixture.document.querySelector('.admin-edit-form[data-id="2"]'));
+  assert.equal(fixture.document.querySelectorAll('.admin-edit-form[data-id="2"]').length, 1);
+  assert.equal(fixture.document.querySelector('.admin-edit-form[data-id="2"]'), createdRow);
+  assert.equal(createdRow.querySelector('input[name="displayName"]').value, 'New');
 });
 
 test('failed list loading allows authorized creation and retry does not replace local edits', async () => {

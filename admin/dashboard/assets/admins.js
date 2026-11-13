@@ -6,6 +6,8 @@ const emailElement = document.querySelector('#admin-email');
 const logoutButton = document.querySelector('#logout-button');
 const retryList = document.querySelector('#admin-list-retry');
 let ready = false;
+let creating = false;
+const savingForms = new WeakSet();
 createForm.inert = true;
 
 const request = window.cmsUI.request;
@@ -81,6 +83,12 @@ function createInput(name, labelText, value, type) {
   return label;
 }
 
+function appendAdminIfMissing(admin) {
+  if (!adminList.querySelector(`.admin-edit-form[data-id="${admin.id}"]`)) {
+    adminList.append(renderAdmin(admin));
+  }
+}
+
 async function loadPage() {
   const { admin: me } = await request('/api/auth/me');
   if (me.role !== 'superadmin') throw new Error('管理者を追加する権限がありません。');
@@ -100,7 +108,7 @@ async function loadList() {
     const { admins } = await request('/api/admins');
     // Keep local edits and rows added while this request was pending.
     for (const admin of admins) {
-      if (!adminList.querySelector(`.admin-edit-form[data-id="${admin.id}"]`)) adminList.append(renderAdmin(admin));
+      appendAdminIfMissing(admin);
     }
     listError.textContent = '';
   } catch (error) {
@@ -114,24 +122,31 @@ retryList.addEventListener('click', loadList);
 
 createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (!ready) return;
+  if (!ready || creating) return;
+  creating = true;
+  createForm.inert = true;
+  createForm.setAttribute('aria-busy', 'true');
   createError.textContent = '';
   delete createError.dataset.success;
   const button = createForm.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
+    const fields = Object.fromEntries(new FormData(createForm));
     const { admin } = await request('/api/admins', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...await csrfHeaders() },
-      body: JSON.stringify(Object.fromEntries(new FormData(createForm)))
+      body: JSON.stringify(fields)
     });
     createForm.reset();
-    adminList.append(renderAdmin(admin));
+    appendAdminIfMissing(admin);
     createError.dataset.success = '';
     createError.textContent = '管理者を追加しました。';
   } catch (error) {
     createError.textContent = error.message;
   } finally {
+    creating = false;
+    createForm.inert = false;
+    createForm.removeAttribute('aria-busy');
     button.disabled = false;
   }
 });
@@ -140,6 +155,10 @@ adminList.addEventListener('submit', async (event) => {
   if (!event.target.matches('.admin-edit-form')) return;
   event.preventDefault();
   const form = event.target;
+  if (savingForms.has(form)) return;
+  savingForms.add(form);
+  form.inert = true;
+  form.setAttribute('aria-busy', 'true');
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
   listError.textContent = '';
@@ -162,6 +181,9 @@ adminList.addEventListener('submit', async (event) => {
   } catch (error) {
     listError.textContent = error.message;
   } finally {
+    savingForms.delete(form);
+    form.inert = false;
+    form.removeAttribute('aria-busy');
     button.disabled = false;
   }
 });

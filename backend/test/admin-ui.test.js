@@ -88,7 +88,12 @@ test('old 401 responses do not block recovery or recreate a dismissed notice', a
     await assert.rejects(ui.request('/api/admins'), /別タブ/);
     ui.password.value = 'new-password';
     const recovered = ui.request('/api/auth/me');
-    if (oldFirst) { old.resolve({ status: 401 }); await oldRequest; }
+    if (oldFirst) {
+      old.resolve({ status: 401 });
+      await oldRequest;
+      assert.ok(ui.document.querySelector('#session-notice'));
+      assert.equal(ui.document.querySelector('#session-notice a')?.getAttribute('href'), '/admin/login');
+    }
     current.resolve(ok());
     await recovered;
     if (!oldFirst) { old.resolve({ status: 401 }); await oldRequest; }
