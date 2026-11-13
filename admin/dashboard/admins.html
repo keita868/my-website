@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>管理者管理 | 九州工業大学交響楽団</title>
+  <link rel="stylesheet" href="/admin/assets/dashboard.css">
+  <script src="/admin/assets/admins.js" defer></script>
+</head>
+<body class="dashboard-page">
+  <aside class="sidebar">
+    <a class="sidebar-brand" href="/admin" aria-label="ダッシュボード">
+      <span class="brand-mark">K</span>
+      <span>ORCHESTRA<span class="brand-subtitle">CONTENT MANAGER</span></span>
+    </a>
+    <nav aria-label="管理メニュー">
+      <a class="nav-link" href="/admin"><span aria-hidden="true">⌂</span> ダッシュボード</a>
+      <a class="nav-link" href="/admin/updates"><span aria-hidden="true">▤</span> 更新情報管理</a>
+      <a class="nav-link active" href="/admin/admins" aria-current="page"><span aria-hidden="true">♙</span> 管理者管理</a>
+      <a class="nav-link" href="/admin/account"><span aria-hidden="true">⚙</span> アカウント設定</a>
+    </nav>
+  </aside>
+  <main class="dashboard-main">
+    <header class="topbar">
+      <span class="eyebrow">ADMINISTRATION</span>
+      <div class="account">
+        <span id="admin-email" class="account-email"></span>
+        <button id="logout-button" class="text-button" type="button">ログアウト</button>
+      </div>
+    </header>
+    <section class="welcome">
+      <p class="eyebrow">USER MANAGEMENT</p>
+      <h1>管理者管理</h1>
+      <p>管理画面を利用する管理者アカウントを管理します。</p>
+    </section>
+    <section class="panel" aria-labelledby="create-title">
+      <h2 id="create-title">管理者を追加</h2>
+      <form id="create-form" class="admin-create-form">
+        <label>表示名<input name="displayName" required maxlength="80"></label>
+        <label>メールアドレス<input name="email" type="email" required maxlength="254"></label>
+        <label>初期パスワード<input name="password" type="password" required minlength="12" autocomplete="new-password"></label>
+        <label>権限
+          <select name="role">
+            <option value="admin">管理者</option>
+            <option value="superadmin">システム管理者</option>
+          </select>
+        </label>
+        <button class="primary-button" type="submit">アカウントを追加</button>
+      </form>
+      <p class="form-error" id="create-error" role="alert" aria-live="polite"></p>
+    </section>
+    <section class="panel" aria-labelledby="list-title">
+      <h2 id="list-title">登録済み管理者</h2>
+      <p class="form-error" id="list-error" role="alert" aria-live="polite"></p>
+      <div class="admin-list" id="admin-list" aria-live="polite"></div>
+    </section>
+  </main>
+</body>
+</html>
