@@ -6,6 +6,7 @@
   <meta name="robots" content="noindex, nofollow">
   <title>新規投稿 | 九州工業大学交響楽団</title>
   <link rel="stylesheet" href="/admin/assets/dashboard.css">
+  <script src="/admin/assets/ui.js" defer></script>
   <script src="/admin/assets/update-create.js" defer></script>
 </head>
 <body class="dashboard-page">
@@ -50,13 +51,15 @@
         </label>
         <label id="schedule-field">予約日時（日本時間）
           <input name="scheduledAt" type="datetime-local">
-          <span class="help-text">予約公開時に指定してください。下書き保存では空欄にすると予約を解除できます。</span>
+          <span class="help-text">新規投稿では日時を指定して「予約する」を押してください。編集中の下書きは、空欄で保存すると予約を解除できます。</span>
         </label>
         <div class="attachment-field">
           <label for="attachments">画像・添付ファイル</label>
           <input id="attachments" type="file" accept="image/jpeg,image/png,image/webp,image/gif,application/pdf" multiple>
           <p class="help-text">JPEG、PNG、WebP、GIF、PDF。1ファイル5MiBまで、1投稿あたり合計5件まで。</p>
           <div class="attachment-list" id="attachment-list"></div>
+          <p class="help-text">今回追加するファイル</p>
+          <div class="attachment-list" id="selected-attachments" aria-live="polite"></div>
         </div>
         <p class="form-error" id="update-error" role="alert" aria-live="assertive"></p>
         <div class="update-actions">

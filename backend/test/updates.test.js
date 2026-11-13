@@ -532,6 +532,7 @@ test('rejects create and edit writes when the admin session is revoked during fi
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(Buffer.from(prefix));
+        controller.enqueue(attachment.subarray(0, 6));
         sentPrefix = true;
       },
       async pull(controller) {
@@ -539,7 +540,7 @@ test('rejects create and edit writes when the admin session is revoked during fi
         sentFile = true;
         signalPaused();
         await uploadMayContinue;
-        controller.enqueue(attachment);
+        controller.enqueue(attachment.subarray(6));
         controller.enqueue(suffix);
         controller.close();
       }
@@ -556,8 +557,16 @@ test('rejects create and edit writes when the admin session is revoked during fi
       redirect: 'manual'
     });
     await uploadIsPaused;
-    await onPaused();
-    releaseUpload();
+    try {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if (readdirSync(path.join(dataDirectory, 'uploads', '.tmp')).length > 0) break;
+        await delay(20);
+      }
+      assert.ok(readdirSync(path.join(dataDirectory, 'uploads', '.tmp')).length > 0);
+      await onPaused();
+    } finally {
+      releaseUpload();
+    }
     return responsePromise;
   }
 
@@ -626,6 +635,32 @@ test('rejects create and edit writes when the admin session is revoked during fi
     () => revokeEditor(editEditorSession)
   );
   assert.equal(editResponse.status, 401);
+
+  await createEditor('Logout Race', 'logout-race@example.test');
+  for (const method of ['POST', 'PATCH']) {
+    const freshLogin = await loginAs('logout-race@example.test', 'editor-revocation-password-2026');
+    const editor = { cookie: freshLogin.cookie, csrf: await csrfFor(freshLogin.cookie) };
+    const logoutResponse = await slowMultipartRequest(
+      method === 'POST' ? '/api/admin/updates' : `/api/admin/updates/${editTarget.data.update.id}`,
+      method,
+      editor,
+      { type: 'news', title: 'logged out upload', body: 'must not persist', ...(method === 'POST' ? { status: 'draft' } : {}) },
+      async () => {
+        const result = await request('/api/auth/logout', {
+          method: 'POST', cookie: editor.cookie, csrf: editor.csrf.csrf
+        });
+        assert.equal(result.response.status, 204);
+      }
+    );
+    assert.equal(logoutResponse.status, 401);
+    assert.equal((await request('/api/auth/me', { cookie: editor.cookie })).response.status, 401);
+    assert.deepEqual(readdirSync(path.join(dataDirectory, 'uploads', '.tmp')), []);
+    const db = new Database(path.join(dataDirectory, 'cms.sqlite'));
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM updates WHERE title = ?').get('logged out upload').count, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM update_attachments WHERE update_id = ?')
+      .get(editTarget.data.update.id).count, 0);
+    db.close();
+  }
 
   const verifyDatabase = new Database(path.join(dataDirectory, 'cms.sqlite'));
   const unchanged = verifyDatabase.prepare('SELECT title, body FROM updates WHERE id = ?')

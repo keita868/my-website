@@ -9,6 +9,7 @@ import session from 'express-session';
 import helmet from 'helmet';
 import { dataDirectory, database } from './database.js';
 import { sessionStore } from './session-store.js';
+import { authenticationExpiresAt, idleTimeoutMs } from './session-policy.js';
 import {
   attachmentPath,
   attachmentUpload,
@@ -70,7 +71,7 @@ app.use(session({
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'strict',
-    maxAge: 1000 * 60 * 60 * 8,
+    maxAge: idleTimeoutMs,
     path: '/'
   }
 }));
@@ -107,12 +108,17 @@ function requireCsrf(req, res, next) {
   next();
 }
 
+function sessionIsActive(req) {
+  return authenticationExpiresAt(req.session) > Date.now()
+    && sessionStore.isActive(req.sessionID);
+}
+
 function requireAdmin(req, res, next) {
   if (!req.session.adminId) {
     return res.status(401).json({ error: 'ログインが必要です。' });
   }
   const admin = adminById.get(req.session.adminId);
-  if (!admin || !admin.is_active || admin.session_version !== req.session.adminVersion) {
+  if (!admin || !admin.is_active || admin.session_version !== req.session.adminVersion || !sessionIsActive(req)) {
     return req.session.destroy((error) => {
       if (error) return next(error);
       res.clearCookie('cms.sid', {
@@ -132,7 +138,7 @@ function requireAdmin(req, res, next) {
 function requirePageAdmin(req, res, next) {
   if (!req.session.adminId) return res.redirect('/admin/login');
   const admin = adminById.get(req.session.adminId);
-  if (!admin || !admin.is_active || admin.session_version !== req.session.adminVersion) {
+  if (!admin || !admin.is_active || admin.session_version !== req.session.adminVersion || !sessionIsActive(req)) {
     return req.session.destroy((error) => {
       if (error) return next(error);
       res.clearCookie('cms.sid', {
@@ -334,9 +340,18 @@ const loginAccountLimiter = rateLimit({
   message: { error: 'ログイン試行が多すぎます。しばらくしてから再度お試しください。' }
 });
 
+const passwordChangeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  keyGenerator: (req) => String(req.admin.id),
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: 'パスワード確認の試行が多すぎます。しばらくしてから再度お試しください。' }
+});
+
 app.get('/admin/login', (req, res) => {
   const admin = req.session.adminId && adminById.get(req.session.adminId);
-  if (admin && admin.is_active && admin.session_version === req.session.adminVersion) {
+  if (admin && admin.is_active && admin.session_version === req.session.adminVersion && sessionIsActive(req)) {
     return res.redirect('/admin');
   }
   res.set('Cache-Control', 'no-store');
@@ -401,6 +416,7 @@ app.post('/api/auth/login', loginLimiter, requireCsrf, loginAccountLimiter, asyn
       if (error) return next(error);
       req.session.adminId = admin.id;
       req.session.adminVersion = admin.session_version;
+      req.session.authenticatedAt = Date.now();
       issueCsrfToken(req);
       req.session.save((saveError) => {
         if (saveError) return next(saveError);
@@ -437,10 +453,10 @@ app.patch('/api/auth/me', requireAdmin, requireCsrf, (req, res) => {
   res.json({ admin: publicAdmin(req.admin) });
 });
 
-app.post('/api/auth/change-password', requireAdmin, requireCsrf, async (req, res, next) => {
+app.post('/api/auth/change-password', requireAdmin, requireCsrf, passwordChangeLimiter, async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body ?? {};
-    if (typeof currentPassword !== 'string' || !validPassword(newPassword)) {
+    if (typeof currentPassword !== 'string' || currentPassword.length > 1024 || !validPassword(newPassword)) {
       return res.status(400).json({ error: '現在のパスワードと12文字以上の新しいパスワードを入力してください。' });
     }
 
@@ -450,6 +466,9 @@ app.post('/api/auth/change-password', requireAdmin, requireCsrf, async (req, res
     }
 
     const passwordHash = await argon2.hash(newPassword, { type: argon2.argon2id });
+    if (!sessionIsActive(req)) {
+      return res.status(401).json({ error: 'ログインが必要です。' });
+    }
     const updatePassword = database.transaction(() => database.prepare(`
       UPDATE admins
       SET password_hash = ?, session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP
@@ -518,7 +537,7 @@ app.post('/api/admins', requireAdmin, requireSuperadmin, requireCsrf, async (req
       const createAdmin = database.transaction(() => {
         const actor = adminById.get(req.admin.id);
         if (!actor || !actor.is_active || actor.role !== 'superadmin'
-          || actor.session_version !== req.session.adminVersion) {
+          || actor.session_version !== req.session.adminVersion || !sessionIsActive(req)) {
           return { error: 'この操作を行う権限がありません。' };
         }
 
@@ -752,7 +771,7 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachment
     const now = new Date().toISOString();
     const saveUpdate = database.transaction(() => {
       const actor = adminById.get(req.admin.id);
-      if (!actor || !actor.is_active || actor.session_version !== req.session.adminVersion) {
+      if (!actor || !actor.is_active || actor.session_version !== req.session.adminVersion || !sessionIsActive(req)) {
         return { error: 'unauthorized' };
       }
       const currentUpdate = database.prepare(`
@@ -885,7 +904,7 @@ app.post('/api/admin/updates', requireAdmin, requireCsrf, receiveAttachments, as
     const publishedAt = status === 'published' ? now : null;
     const createUpdate = database.transaction(() => {
       const actor = adminById.get(req.admin.id);
-      if (!actor || !actor.is_active || actor.session_version !== req.session.adminVersion) {
+      if (!actor || !actor.is_active || actor.session_version !== req.session.adminVersion || !sessionIsActive(req)) {
         return { error: 'unauthorized' };
       }
       const result = database.prepare(`
@@ -952,7 +971,10 @@ app.use('/api', (_req, res) => {
 });
 
 app.use((error, _req, res, _next) => {
-  process.stderr.write(`${error.stack || error}\n`);
+  // JSON parser messages can include submitted passwords or other request data.
+  process.stderr.write(error.type === 'entity.parse.failed'
+    ? 'JSONリクエストを解析できませんでした。\n'
+    : `${error.stack || error}\n`);
   if (res.headersSent) return;
   const status = error.status === 400 ? 400 : error.status === 413 ? 413 : 500;
   res.status(status).json({

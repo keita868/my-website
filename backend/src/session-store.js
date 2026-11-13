@@ -3,6 +3,7 @@ import path from 'node:path';
 import session from 'express-session';
 import Database from 'better-sqlite3';
 import { dataDirectory } from './database.js';
+import { authenticationExpiresAt } from './session-policy.js';
 
 const sessionDatabasePath = path.join(dataDirectory, 'sessions.sqlite');
 const sessionDatabaseExisted = existsSync(sessionDatabasePath);
@@ -15,6 +16,13 @@ database.exec(`
     sid TEXT PRIMARY KEY,
     expired INTEGER NOT NULL,
     sess TEXT NOT NULL
+  )
+`);
+// Keep revocations longer than any session or in-flight HTTP request can live.
+database.exec(`
+  CREATE TABLE IF NOT EXISTS revoked_sessions (
+    sid TEXT PRIMARY KEY,
+    expired INTEGER NOT NULL
   )
 `);
 chmodSync(sessionDatabasePath, 0o600);
@@ -31,12 +39,35 @@ const touchSession = database.prepare(`
 `);
 const destroySession = database.prepare('DELETE FROM sessions WHERE sid = ?');
 const pruneSessions = database.prepare('DELETE FROM sessions WHERE expired < ?');
+const revokeSession = database.prepare('INSERT OR REPLACE INTO revoked_sessions (sid, expired) VALUES (?, ?)');
+const revokedSession = database.prepare('SELECT 1 FROM revoked_sessions WHERE sid = ?');
+const pruneRevocations = database.prepare('DELETE FROM revoked_sessions WHERE expired < ?');
+const saveSession = database.transaction((sessionId, value) => {
+  if (!revokedSession.get(sessionId)) {
+    setSession.run(sessionId, expiresAt(value), JSON.stringify(value));
+  }
+});
+
+function expiresAt(value) {
+  const cookieExpiry = value.cookie?.expires
+    ? new Date(value.cookie.expires).getTime()
+    : Date.now() + (value.cookie?.maxAge || 24 * 60 * 60 * 1000);
+  return value.adminId ? Math.min(cookieExpiry, authenticationExpiresAt(value)) : cookieExpiry;
+}
 
 class SQLiteSessionStore extends session.Store {
+  isActive(sessionId) {
+    const row = getSession.get(sessionId, Date.now());
+    if (!row) return false;
+    const value = JSON.parse(row.sess);
+    return !value.adminId || authenticationExpiresAt(value) > Date.now();
+  }
+
   get(sessionId, callback) {
     try {
       const row = getSession.get(sessionId, Date.now());
-      callback(null, row ? JSON.parse(row.sess) : null);
+      const value = row ? JSON.parse(row.sess) : null;
+      callback(null, value?.adminId && authenticationExpiresAt(value) <= Date.now() ? null : value);
     } catch (error) {
       callback(error);
     }
@@ -44,10 +75,7 @@ class SQLiteSessionStore extends session.Store {
 
   set(sessionId, value, callback = () => {}) {
     try {
-      const expiresAt = value.cookie?.expires
-        ? new Date(value.cookie.expires).getTime()
-        : Date.now() + (value.cookie?.maxAge || 24 * 60 * 60 * 1000);
-      setSession.run(sessionId, expiresAt, JSON.stringify(value));
+      saveSession.immediate(sessionId, value);
       callback(null);
     } catch (error) {
       callback(error);
@@ -56,10 +84,7 @@ class SQLiteSessionStore extends session.Store {
 
   touch(sessionId, value, callback = () => {}) {
     try {
-      const expiresAt = value.cookie?.expires
-        ? new Date(value.cookie.expires).getTime()
-        : Date.now() + (value.cookie?.maxAge || 24 * 60 * 60 * 1000);
-      touchSession.run(expiresAt, sessionId, Date.now());
+      touchSession.run(expiresAt(value), sessionId, Date.now());
       callback(null);
     } catch (error) {
       callback(error);
@@ -68,7 +93,10 @@ class SQLiteSessionStore extends session.Store {
 
   destroy(sessionId, callback = () => {}) {
     try {
-      destroySession.run(sessionId);
+      database.transaction(() => {
+        revokeSession.run(sessionId, Date.now() + 24 * 60 * 60 * 1000);
+        destroySession.run(sessionId);
+      })();
       callback(null);
     } catch (error) {
       callback(error);
@@ -77,9 +105,11 @@ class SQLiteSessionStore extends session.Store {
 }
 
 pruneSessions.run(Date.now());
+pruneRevocations.run(Date.now());
 const cleanupTimer = setInterval(() => {
   try {
     pruneSessions.run(Date.now());
+    pruneRevocations.run(Date.now());
   } catch (error) {
     process.stderr.write(`期限切れセッションを削除できませんでした: ${error.stack || error}\n`);
   }

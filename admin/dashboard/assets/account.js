@@ -6,16 +6,7 @@ const emailElement = document.querySelector('#admin-email');
 const adminsLink = document.querySelector('#admins-nav');
 const logoutButton = document.querySelector('#logout-button');
 
-async function request(url, options = {}) {
-  const response = await fetch(url, { credentials: 'same-origin', ...options });
-  if (response.status === 401) {
-    window.location.replace('/admin/login');
-    throw new Error('ログインが必要です。');
-  }
-  const data = response.status === 204 ? {} : await response.json();
-  if (!response.ok) throw new Error(data.error || 'リクエストに失敗しました。');
-  return data;
-}
+const request = window.cmsUI.request;
 
 async function csrfHeaders() {
   const { csrfToken } = await request('/api/auth/csrf');
@@ -33,6 +24,7 @@ async function loadProfile() {
 profileForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   profileMessage.textContent = '';
+  delete profileMessage.dataset.success;
   const button = profileForm.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
@@ -43,6 +35,7 @@ profileForm.addEventListener('submit', async (event) => {
     });
     await loadProfile();
     profileMessage.textContent = 'プロフィールを保存しました。';
+    profileMessage.dataset.success = '';
   } catch (error) {
     profileMessage.textContent = error.message;
   } finally {

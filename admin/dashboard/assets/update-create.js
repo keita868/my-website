@@ -10,17 +10,55 @@ const pageDescription = document.querySelector('#page-description');
 const scheduleField = document.querySelector('#schedule-field');
 const editMatch = /^\/admin\/updates\/(\d+)\/edit\/?$/i.exec(window.location.pathname);
 const editUpdateId = editMatch?.[1];
+let existingAttachmentCount = 0;
+let dirty = false;
+let saving = false;
+const selectedAttachments = document.querySelector('#selected-attachments');
+let ready = false;
+updateForm.inert = true;
+updateForm.setAttribute('aria-busy', 'true');
 
-async function request(url, options = {}) {
-  const response = await fetch(url, { credentials: 'same-origin', ...options });
-  if (response.status === 401) {
-    window.location.replace('/admin/login');
-    throw new Error('ログインが必要です。');
-  }
-  const data = response.status === 204 ? {} : await response.json();
-  if (!response.ok) throw new Error(data.error || 'リクエストに失敗しました。');
-  return data;
+updateForm.addEventListener('input', () => { dirty = true; });
+updateForm.addEventListener('change', () => { dirty = true; });
+window.addEventListener('beforeunload', (event) => {
+  if (!dirty && !saving) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+
+function validateAttachments() {
+  const files = [...attachmentInput.files];
+  let message = '';
+  if (existingAttachmentCount + files.length > 5) message = '保存済みの添付と合わせて最大5件までです。';
+  else if (files.some((file) => file.size === 0 || file.size > 5 * 1024 * 1024)) message = '各ファイルは空ではない5MiB以下のものを選んでください。';
+  else if (files.some((file) => !/\.(jpe?g|png|webp|gif|pdf)$/i.test(file.name))) message = 'JPEG、PNG、WebP、GIF、PDFを選んでください。';
+  attachmentInput.setCustomValidity(message);
+  return !message;
 }
+
+attachmentInput.addEventListener('change', () => {
+  selectedAttachments.replaceChildren();
+  const valid = validateAttachments();
+  for (const file of attachmentInput.files) {
+    const item = document.createElement('div');
+    item.className = 'attachment-item';
+    if (valid && ['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type)) {
+      const preview = document.createElement('img');
+      const reader = new FileReader();
+      reader.addEventListener('load', () => { preview.src = reader.result; });
+      reader.readAsDataURL(file);
+      preview.alt = file.name;
+      item.append(preview);
+    }
+    const name = document.createElement('span');
+    name.textContent = `${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MiB)`;
+    item.append(name);
+    selectedAttachments.append(item);
+  }
+  if (!valid) attachmentInput.reportValidity();
+});
+
+const request = window.cmsUI.request;
 
 async function csrfHeaders() {
   const { csrfToken } = await request('/api/auth/csrf');
@@ -28,6 +66,8 @@ async function csrfHeaders() {
 }
 
 function renderAttachments(attachments) {
+  existingAttachmentCount = attachments.length;
+  validateAttachments();
   attachmentList.replaceChildren();
   for (const attachment of attachments) {
     const item = document.createElement('div');
@@ -74,12 +114,14 @@ async function loadUpdate() {
   updateForm.elements.type.value = update.type;
   updateForm.elements.title.value = update.title;
   updateForm.elements.body.value = update.body;
+  for (const field of [updateForm.elements.title, updateForm.elements.body]) field.dispatchEvent(new Event('change'));
+  dirty = false;
 
   if (update.status === 'published') {
     scheduleField.hidden = true;
   } else if (update.scheduledAt) {
     updateForm.elements.scheduledAt.value = new Date(update.scheduledAt)
-      .toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace(' ', 'T');
+      .toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace(' ', 'T').slice(0, 16);
   }
   updateForm.querySelectorAll('button[name="status"]').forEach((button) => { button.hidden = true; });
   if (!updateForm.querySelector('#edit-save-button')) {
@@ -95,8 +137,23 @@ async function loadUpdate() {
 
 updateForm.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!ready || saving || !validateAttachments()) {
+    attachmentInput.reportValidity();
+    return;
+  }
   updateError.textContent = '';
   const submitter = event.submitter;
+  const scheduled = !editUpdateId && submitter?.value === 'scheduled';
+  const scheduleInput = updateForm.elements.scheduledAt;
+  if (scheduled && (!scheduleInput.value || new Date(`${scheduleInput.value}:00+09:00`).getTime() <= Date.now())) {
+    updateError.textContent = '予約日時に現在より後の日本時間を指定してください。';
+    scheduleInput.focus();
+    return;
+  }
+  saving = true;
+  updateForm.setAttribute('aria-busy', 'true');
+  const originalLabel = submitter?.textContent;
+  if (submitter) submitter.textContent = '保存中…';
   const submitButtons = updateForm.querySelectorAll('button[type="submit"]');
   submitButtons.forEach((button) => { button.disabled = true; });
   const fields = new FormData(updateForm);
@@ -104,7 +161,7 @@ updateForm.addEventListener('submit', async (event) => {
   body.set('type', fields.get('type'));
   body.set('title', fields.get('title'));
   body.set('body', fields.get('body'));
-  if (!scheduleField.hidden) body.set('scheduledAt', fields.get('scheduledAt') || '');
+  if (!scheduleField.hidden && (editUpdateId || scheduled)) body.set('scheduledAt', fields.get('scheduledAt') || '');
   for (const file of attachmentInput.files) body.append('attachments', file);
 
   try {
@@ -115,6 +172,8 @@ updateForm.addEventListener('submit', async (event) => {
         headers,
         body
       });
+      dirty = false;
+      saving = false;
       window.location.replace('/admin/updates?updated=1');
       return;
     }
@@ -125,10 +184,16 @@ updateForm.addEventListener('submit', async (event) => {
       headers,
       body
     });
+    dirty = false;
+    saving = false;
     window.location.replace('/admin/updates?created=1');
   } catch (error) {
     updateError.textContent = `${error.message} 入力内容は保持しています。登録状況が不明な場合は、一覧で確認してから再送信してください。`;
     submitButtons.forEach((button) => { button.disabled = false; });
+    saving = false;
+  } finally {
+    updateForm.removeAttribute('aria-busy');
+    if (submitter) submitter.textContent = originalLabel;
   }
 });
 
@@ -143,6 +208,7 @@ attachmentList.addEventListener('click', async (event) => {
     body: updateForm.elements.body.value,
     scheduledAt: updateForm.elements.scheduledAt.value
   };
+  const wasDirty = dirty;
   try {
     await request(`/api/admin/updates/${editUpdateId}/attachments/${button.dataset.attachmentId}`, {
       method: 'DELETE',
@@ -153,6 +219,9 @@ attachmentList.addEventListener('click', async (event) => {
     updateForm.elements.title.value = formValues.title;
     updateForm.elements.body.value = formValues.body;
     updateForm.elements.scheduledAt.value = formValues.scheduledAt;
+    dirty = wasDirty;
+    for (const field of [updateForm.elements.title, updateForm.elements.body]) field.dispatchEvent(new Event('change'));
+    dirty = wasDirty;
   } catch (error) {
     updateError.textContent = error.message;
     button.disabled = false;
@@ -160,10 +229,12 @@ attachmentList.addEventListener('click', async (event) => {
 });
 
 logoutButton.addEventListener('click', async () => {
+  if (dirty && !window.confirm('未保存の変更があります。破棄してログアウトしますか？')) return;
   logoutButton.disabled = true;
   updateError.textContent = '';
   try {
     await request('/api/auth/logout', { method: 'POST', headers: await csrfHeaders() });
+    dirty = false;
     window.location.replace('/admin/login');
   } catch (error) {
     updateError.textContent = error.message;
@@ -171,6 +242,15 @@ logoutButton.addEventListener('click', async () => {
   }
 });
 
-Promise.all([loadSession(), loadUpdate()]).catch((error) => {
-  updateError.textContent = error.message;
-});
+Promise.all([loadSession(), loadUpdate()])
+  .then(() => {
+    ready = true;
+    updateForm.inert = false;
+    updateForm.removeAttribute('aria-busy');
+  })
+  .catch((error) => {
+    updateForm.inert = false;
+    updateForm.removeAttribute('aria-busy');
+    updateError.textContent = `${error.message} 読み込みを完了できませんでした。画面を再読み込みしてください。`;
+    updateForm.querySelectorAll('button[type="submit"]').forEach((button) => { button.disabled = true; });
+  });

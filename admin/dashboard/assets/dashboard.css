@@ -15,6 +15,24 @@
 body { margin: 0; min-height: 100vh; }
 
 button, input { font: inherit; }
+select, textarea { font: inherit; }
+
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+
+.session-notice { margin: 20px 0; padding: 18px; border: 1px solid #c39043; border-radius: 6px; background: #fff7e6; font-size: 13px; line-height: 1.8; }
+.session-notice p { margin: 0 0 8px; }
+.session-notice a { color: #713e2d; font-weight: 600; }
+.password-field { min-width: 0; }
+.password-toggle { justify-self: start; margin: 0 0 12px; }
+.password-field label { margin-bottom: 0; }
+.password-field .password-toggle { margin: 4px 0 0; }
+.character-count { text-align: right; font-weight: 400; }
+.update-filters { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; }
+.update-filters label { display: grid; gap: 8px; flex: 1; min-width: 160px; }
+.update-filters input, .update-filters select { width: 100%; height: 44px; margin: 0; padding: 0 12px; border: 1px solid #dedbd6; border-radius: 5px; background: #fff; }
+#update-count { margin-bottom: 16px; }
+[data-success] { color: #35653d; }
+.secondary-button { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
 
 .auth-page {
   display: grid;

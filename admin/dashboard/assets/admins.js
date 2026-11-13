@@ -5,16 +5,7 @@ const createError = document.querySelector('#create-error');
 const emailElement = document.querySelector('#admin-email');
 const logoutButton = document.querySelector('#logout-button');
 
-async function request(url, options = {}) {
-  const response = await fetch(url, { credentials: 'same-origin', ...options });
-  if (response.status === 401) {
-    window.location.replace('/admin/login');
-    throw new Error('ログインが必要です。');
-  }
-  const data = response.status === 204 ? {} : await response.json();
-  if (!response.ok) throw new Error(data.error || 'リクエストに失敗しました。');
-  return data;
-}
+const request = window.cmsUI.request;
 
 async function csrfHeaders() {
   const { csrfToken } = await request('/api/auth/csrf');
@@ -101,16 +92,19 @@ async function loadPage() {
 createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   createError.textContent = '';
+  delete createError.dataset.success;
   const button = createForm.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
-    await request('/api/admins', {
+    const { admin } = await request('/api/admins', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...await csrfHeaders() },
       body: JSON.stringify(Object.fromEntries(new FormData(createForm)))
     });
     createForm.reset();
-    await loadPage();
+    adminList.append(renderAdmin(admin));
+    createError.dataset.success = '';
+    createError.textContent = '管理者を追加しました。';
   } catch (error) {
     createError.textContent = error.message;
   } finally {
@@ -125,9 +119,10 @@ adminList.addEventListener('submit', async (event) => {
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
   listError.textContent = '';
+  delete listError.dataset.success;
   try {
     const fields = new FormData(form);
-    await request(`/api/admins/${form.dataset.id}`, {
+    const { admin } = await request(`/api/admins/${form.dataset.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...await csrfHeaders() },
       body: JSON.stringify({
@@ -137,7 +132,9 @@ adminList.addEventListener('submit', async (event) => {
         isActive: fields.get('isActive') === 'on'
       })
     });
-    await loadPage();
+    form.closest('.admin-row').replaceWith(renderAdmin(admin));
+    listError.dataset.success = '';
+    listError.textContent = '変更を保存しました。';
   } catch (error) {
     listError.textContent = error.message;
   } finally {
