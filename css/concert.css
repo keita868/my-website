@@ -1,0 +1,238 @@
+#orchestra-about-demo.concert-page {
+  --concert-ink: #f5f0e8;
+  --concert-muted: #c8c1b7;
+  --concert-accent: #dfbd86;
+  --concert-line: #ffffff26;
+  --concert-serif: "Yu Mincho", "Hiragino Mincho ProN", Georgia, serif;
+  color: var(--concert-ink);
+  background: #080808;
+}
+
+.concert-container {
+  width: min(100% - 44px, 1120px);
+  margin-inline: auto;
+}
+
+.concert-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, .75fr);
+  gap: clamp(48px, 9vw, 136px);
+  align-items: center;
+  min-height: min(94svh, 900px);
+  padding-block: clamp(132px, 16vw, 210px) clamp(100px, 12vw, 174px);
+}
+
+.concert-label {
+  margin: 0;
+  color: var(--concert-accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .19em;
+}
+
+.concert-hero h1,
+.concert-program h2,
+.concert-conductor h2 {
+  margin: 16px 0 0;
+  font-family: var(--concert-serif);
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+.concert-hero h1 {
+  margin-top: clamp(24px, 4vw, 48px);
+  font-size: clamp(46px, 8vw, 106px);
+  letter-spacing: -.055em;
+}
+
+.concert-details {
+  display: grid;
+  gap: 13px;
+  margin: clamp(34px, 5vw, 56px) 0 16px;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.concert-details > div {
+  display: grid;
+  grid-template-columns: 3em 1fr;
+  gap: 8px;
+}
+
+.concert-details dt { color: var(--concert-accent); }
+.concert-details dd { margin: 0; }
+
+.concert-poster { margin: 0; width: min(100%, 380px); }
+
+.concert-poster img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--concert-line);
+}
+
+.concert-poster figcaption {
+  margin-top: 12px;
+  color: var(--concert-muted);
+  font-size: 12px;
+}
+
+.concert-program {
+  border-top: 1px solid var(--concert-line);
+  padding-block: clamp(76px, 10vw, 146px);
+}
+
+.concert-program h2 { font-size: clamp(38px, 6vw, 68px); }
+
+.concert-program__list {
+  margin: clamp(24px, 5vw, 56px) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.concert-program__list li {
+  display: grid;
+  grid-template-columns: clamp(100px, 16vw, 184px) minmax(0, 1fr);
+  gap: 24px;
+  align-items: baseline;
+  padding-block: clamp(32px, 5vw, 64px);
+  border-bottom: 1px solid var(--concert-line);
+}
+
+.concert-program__role {
+  color: var(--concert-accent);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.concert-program__composer {
+  margin: 0 0 6px;
+  color: var(--concert-muted);
+  font-size: 14px;
+}
+
+.concert-program__description {
+  max-width: 43em;
+  margin: 18px 0 0;
+  color: var(--concert-muted);
+  font-size: clamp(15px, 1.5vw, 17px);
+  line-height: 1.95;
+}
+
+.concert-program__list h3 {
+  margin: 0;
+  font-family: var(--concert-serif);
+  font-size: clamp(22px, 3.5vw, 37px);
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.concert-conductor {
+  background: radial-gradient(ellipse at 64% 41%, #25221f 0%, #11100f 45%, #080808 78%);
+  overflow: hidden;
+}
+
+.concert-conductor__inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: clamp(24px, 4.5vw, 64px);
+  align-items: center;
+  padding-top: clamp(64px, 9vw, 120px);
+}
+
+.concert-conductor__copy {
+  position: relative;
+  z-index: 1;
+  padding-bottom: clamp(64px, 9vw, 120px);
+}
+
+.concert-conductor .concert-label span {
+  margin-inline-start: 12px;
+  color: var(--concert-muted);
+  letter-spacing: .05em;
+}
+
+.concert-conductor h2 {
+  font-size: clamp(42px, 7vw, 95px);
+  white-space: nowrap;
+}
+
+.concert-conductor__roman {
+  margin: 18px 0 28px;
+  color: var(--concert-accent);
+  font: 400 clamp(14px, 2vw, 20px) Georgia, serif;
+  letter-spacing: .22em;
+  text-transform: uppercase;
+}
+
+.concert-conductor__bio {
+  max-width: 36em;
+  color: var(--concert-muted);
+  font-size: clamp(15px, 1.6vw, 17px);
+  line-height: 2;
+}
+
+.concert-conductor__bio p {
+  margin: 0;
+}
+
+.concert-conductor__bio p + p {
+  margin-top: clamp(20px, 3vw, 32px);
+}
+
+.concert-conductor__summary {
+  display: none;
+}
+
+.concert-conductor__portrait {
+  display: block;
+  width: calc(100% + clamp(30px, 5vw, 82px));
+  align-self: end;
+  object-fit: contain;
+  object-position: right bottom;
+}
+
+/* 共通メニューの白い下部ドック用 */
+#orchestra-about-demo.concert-page .c-menuDock__title { color: #171717; }
+#orchestra-about-demo.concert-page .desktop-navigation [aria-current="page"] { color: var(--concert-accent); }
+
+@media (width < 700px) {
+  .concert-hero {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    min-height: 0;
+    gap: 54px;
+    text-align: center;
+  }
+
+  .concert-details { gap: 20px; }
+  .concert-details > div { grid-template-columns: 1fr; gap: 4px; }
+
+  .concert-conductor__inner {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding-top: 54px;
+  }
+
+  .concert-poster { width: min(100%, 300px); }
+  .concert-program__list li { grid-template-columns: 1fr; gap: 12px; }
+  .concert-conductor__copy { padding-bottom: 0; }
+  .concert-conductor__roman,
+  .concert-conductor__bio { display: none; }
+
+  .concert-conductor__summary {
+    display: block;
+    max-width: min(84%, 18em);
+    margin: 16px 0 0;
+    color: var(--concert-muted);
+    font-size: 15px;
+    line-height: 1.9;
+    text-align: left;
+  }
+
+  .concert-conductor__portrait {
+    width: min(100% + 44px, 540px);
+    margin-right: -22px;
+    justify-self: end;
+  }
+}
