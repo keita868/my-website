@@ -1,14 +1,14 @@
 import { createReadStream } from 'node:fs';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import argon2 from 'argon2';
-import connectSqlite3 from 'connect-sqlite3';
 import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import session from 'express-session';
 import helmet from 'helmet';
 import { dataDirectory, database } from './database.js';
+import { sessionStore } from './session-store.js';
 import {
   attachmentPath,
   attachmentUpload,
@@ -20,7 +20,6 @@ import {
 const app = express();
 const projectDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const dashboardDirectory = path.join(projectDirectory, 'admin', 'dashboard');
-const SQLiteStore = connectSqlite3(session);
 const sessionSecret = process.env.CMS_SESSION_SECRET;
 
 if (!sessionSecret || sessionSecret.length < 32) {
@@ -63,12 +62,7 @@ app.use(express.json({ limit: '32kb' }));
 app.use(session({
   name: 'cms.sid',
   secret: sessionSecret,
-  store: new SQLiteStore({
-    db: 'sessions.sqlite',
-    dir: dataDirectory,
-    table: 'sessions',
-    concurrentDb: true
-  }),
+  store: sessionStore,
   resave: false,
   saveUninitialized: false,
   rolling: true,
@@ -328,6 +322,18 @@ const loginLimiter = rateLimit({
   message: { error: 'ログイン試行が多すぎます。しばらくしてから再度お試しください。' }
 });
 
+const loginAccountLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => createHash('sha256')
+    .update(typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : 'invalid-email')
+    .digest('hex'),
+  standardHeaders: false,
+  legacyHeaders: false,
+  message: { error: 'ログイン試行が多すぎます。しばらくしてから再度お試しください。' }
+});
+
 app.get('/admin/login', (req, res) => {
   const admin = req.session.adminId && adminById.get(req.session.adminId);
   if (admin && admin.is_active && admin.session_version === req.session.adminVersion) {
@@ -368,7 +374,7 @@ app.get('/api/auth/csrf', (req, res) => {
 
 app.get(['/api/auth/session', '/api/auth/me'], requireAdmin, authMe);
 
-app.post('/api/auth/login', loginLimiter, requireCsrf, async (req, res, next) => {
+app.post('/api/auth/login', loginLimiter, loginAccountLimiter, requireCsrf, async (req, res, next) => {
   try {
     const { email, password } = req.body ?? {};
     if (typeof email !== 'string' || typeof password !== 'string'

@@ -35,10 +35,11 @@ function cookieFrom(response, fallback = '') {
   return response.headers.get('set-cookie')?.split(';', 1)[0] || fallback;
 }
 
-async function request(pathname, { method = 'GET', cookie = '', csrf, body } = {}) {
+async function request(pathname, { method = 'GET', cookie = '', csrf, body, forwardedFor } = {}) {
   const headers = {};
   if (cookie) headers.Cookie = cookie;
   if (csrf) headers['X-CSRF-Token'] = csrf;
+  if (forwardedFor) headers['X-Forwarded-For'] = forwardedFor;
   const isFormData = body instanceof FormData;
   if (body !== undefined && !isFormData) headers['Content-Type'] = 'application/json';
   const response = await fetch(`${origin}${pathname}`, {
@@ -99,6 +100,7 @@ before(async () => {
       ...process.env,
       CMS_DATA_DIR: dataDirectory,
       CMS_SESSION_SECRET: secret,
+      TRUST_PROXY: '1',
       PORT: String(port)
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -466,4 +468,26 @@ test('edits, schedules, attaches, withdraws, and deletes updates safely', async 
   assert.equal(removeUpdate.response.status, 204);
   assert.equal(existsSync(remainingAttachmentPath), false);
   assert.equal((await request(`/api/admin/updates/${updateId}`, { cookie: adminLogin.cookie })).response.status, 404);
+});
+
+test('limits failed login attempts by account across client IP addresses', async () => {
+  const initial = await csrfFor();
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const failedLogin = await request('/api/auth/login', {
+      method: 'POST',
+      cookie: initial.cookie,
+      csrf: initial.csrf,
+      forwardedFor: `198.51.100.${attempt + 1}`,
+      body: { email: adminEmail.toUpperCase(), password: 'incorrect-password' }
+    });
+    assert.equal(failedLogin.response.status, 401);
+  }
+  const limitedLogin = await request('/api/auth/login', {
+    method: 'POST',
+    cookie: initial.cookie,
+    csrf: initial.csrf,
+    forwardedFor: '203.0.113.200',
+    body: { email: adminEmail, password: 'incorrect-password' }
+  });
+  assert.equal(limitedLogin.response.status, 429);
 });
