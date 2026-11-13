@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>更新情報管理 | 九州工業大学交響楽団</title>
+  <link rel="stylesheet" href="/admin/assets/dashboard.css">
+  <script src="/admin/assets/updates.js" defer></script>
+</head>
+<body class="dashboard-page">
+  <aside class="sidebar">
+    <a class="sidebar-brand" href="/admin" aria-label="ダッシュボード">
+      <span class="brand-mark">K</span>
+      <span>ORCHESTRA<span class="brand-subtitle">CONTENT MANAGER</span></span>
+    </a>
+    <nav aria-label="管理メニュー">
+      <a class="nav-link" href="/admin"><span aria-hidden="true">⌂</span> ダッシュボード</a>
+      <a class="nav-link active" href="/admin/updates" aria-current="page"><span aria-hidden="true">▤</span> 更新情報管理</a>
+      <a class="nav-link" id="admins-nav" href="/admin/admins" hidden><span aria-hidden="true">♙</span> 管理者管理</a>
+      <a class="nav-link" href="/admin/account"><span aria-hidden="true">⚙</span> アカウント設定</a>
+    </nav>
+  </aside>
+  <main class="dashboard-main">
+    <header class="topbar">
+      <span class="eyebrow">CONTENT MANAGEMENT</span>
+      <div class="account">
+        <span id="admin-email" class="account-email"></span>
+        <button id="logout-button" class="text-button" type="button">ログアウト</button>
+      </div>
+    </header>
+    <section class="welcome">
+      <p class="eyebrow">NEWS & NOTICES</p>
+      <h1>更新情報管理</h1>
+      <p>ニュース・お知らせの投稿と公開状態を管理します。</p>
+    </section>
+    <section class="panel" aria-labelledby="updates-title">
+      <div class="updates-toolbar">
+        <h2 id="updates-title">投稿一覧</h2>
+        <a class="secondary-button" href="/admin/updates/new">新規投稿</a>
+      </div>
+      <p class="form-error" id="updates-message" role="status" aria-live="polite"></p>
+      <p class="form-error" id="updates-error" role="alert" aria-live="assertive"></p>
+      <div class="update-list" id="update-list" aria-live="polite"></div>
+    </section>
+  </main>
+</body>
+</html>
