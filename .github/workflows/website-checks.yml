@@ -1,0 +1,47 @@
+name: Website checks
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: website-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Check JavaScript syntax
+        shell: bash
+        run: |
+          while IFS= read -r -d '' file; do
+            node --check "$file" || exit 1
+          done < <(git ls-files -z '*.js' '*.mjs')
+      - name: Install backend dependencies
+        if: ${{ hashFiles('backend/package-lock.json') != '' }}
+        working-directory: backend
+        run: npm ci
+      - name: Run backend tests
+        if: ${{ hashFiles('backend/package-lock.json') != '' }}
+        working-directory: backend
+        run: npm test
+      - name: Record test scope
+        if: always()
+        shell: bash
+        run: |
+          if test -f backend/package-lock.json; then
+            echo "Backend tests: see the npm test step above." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Backend is absent on this branch. Backend tests were not run." >> "$GITHUB_STEP_SUMMARY"
+          fi
