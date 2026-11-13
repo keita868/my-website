@@ -374,7 +374,7 @@ app.get('/api/auth/csrf', (req, res) => {
 
 app.get(['/api/auth/session', '/api/auth/me'], requireAdmin, authMe);
 
-app.post('/api/auth/login', loginLimiter, loginAccountLimiter, requireCsrf, async (req, res, next) => {
+app.post('/api/auth/login', loginLimiter, requireCsrf, loginAccountLimiter, async (req, res, next) => {
   try {
     const { email, password } = req.body ?? {};
     if (typeof email !== 'string' || typeof password !== 'string'
@@ -713,7 +713,7 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachment
     cleanupTemporaryFiles(req.files);
     return res.status(400).json({ error: '投稿IDが正しくありません。' });
   }
-  const existing = database.prepare('SELECT status FROM updates WHERE id = ?').get(updateId);
+  const existing = database.prepare('SELECT status, updated_at AS updatedAt FROM updates WHERE id = ?').get(updateId);
   if (!existing) {
     cleanupTemporaryFiles(req.files);
     return res.status(404).json({ error: '投稿が見つかりません。' });
@@ -751,6 +751,18 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachment
     savedAttachments = await persistAttachments(req.files || [], attachmentCount);
     const now = new Date().toISOString();
     const saveUpdate = database.transaction(() => {
+      const actor = adminById.get(req.admin.id);
+      if (!actor || !actor.is_active || actor.session_version !== req.session.adminVersion) {
+        return { error: 'unauthorized' };
+      }
+      const currentUpdate = database.prepare(`
+        SELECT status, updated_at AS updatedAt FROM updates WHERE id = ?
+      `).get(updateId);
+      if (!currentUpdate || currentUpdate.status !== existing.status
+        || currentUpdate.updatedAt !== existing.updatedAt
+        || (scheduledAt && currentUpdate.status !== 'draft')) {
+        return { error: 'conflict' };
+      }
       const currentAttachmentCount = database.prepare(`
         SELECT COUNT(*) AS count FROM update_attachments WHERE update_id = ?
       `).get(updateId).count;
@@ -759,11 +771,22 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachment
         error.status = 400;
         throw error;
       }
-      database.prepare(`
+      const updateResult = database.prepare(`
         UPDATE updates
         SET type = ?, title = ?, body = ?, scheduled_at = ?, updated_at = ?, updated_by = ?
-        WHERE id = ?
-      `).run(type, title.trim(), body.trim(), scheduledAt, now, req.admin.id, updateId);
+        WHERE id = ? AND status = ? AND updated_at = ?
+      `).run(
+        type,
+        title.trim(),
+        body.trim(),
+        scheduledAt,
+        now,
+        actor.id,
+        updateId,
+        currentUpdate.status,
+        currentUpdate.updatedAt
+      );
+      if (updateResult.changes !== 1) return { error: 'conflict' };
       const insertAttachment = database.prepare(`
         INSERT INTO update_attachments (update_id, stored_name, original_name, mime_type, size, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -778,8 +801,16 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachment
           now
         );
       }
+      return { success: true };
     });
-    saveUpdate();
+    const result = saveUpdate();
+    if (!result.success) {
+      removeSavedAttachments(savedAttachments);
+      if (result.error === 'unauthorized') {
+        return res.status(401).json({ error: 'ログイン状態が更新されました。再ログインしてください。' });
+      }
+      return res.status(409).json({ error: '投稿状態が変更されました。画面を再読み込みしてください。' });
+    }
     res.json({ success: true, update: getUpdate(updateId) });
   } catch (error) {
     cleanupTemporaryFiles(req.files);
@@ -853,6 +884,10 @@ app.post('/api/admin/updates', requireAdmin, requireCsrf, receiveAttachments, as
     const updateStatus = status === 'published' ? 'published' : 'draft';
     const publishedAt = status === 'published' ? now : null;
     const createUpdate = database.transaction(() => {
+      const actor = adminById.get(req.admin.id);
+      if (!actor || !actor.is_active || actor.session_version !== req.session.adminVersion) {
+        return { error: 'unauthorized' };
+      }
       const result = database.prepare(`
         INSERT INTO updates (
           type, title, body, status, published_at, scheduled_at,
@@ -865,8 +900,8 @@ app.post('/api/admin/updates', requireAdmin, requireCsrf, receiveAttachments, as
         updateStatus,
         publishedAt,
         scheduledAt,
-        req.admin.id,
-        req.admin.id,
+        actor.id,
+        actor.id,
         now,
         now
       );
@@ -884,10 +919,14 @@ app.post('/api/admin/updates', requireAdmin, requireCsrf, receiveAttachments, as
           now
         );
       }
-      return Number(result.lastInsertRowid);
+      return { updateId: Number(result.lastInsertRowid) };
     });
-    const updateId = createUpdate();
-    res.status(201).json({ success: true, update: getUpdate(updateId) });
+    const result = createUpdate();
+    if (result.error === 'unauthorized') {
+      removeSavedAttachments(savedAttachments);
+      return res.status(401).json({ error: 'ログイン状態が更新されました。再ログインしてください。' });
+    }
+    res.status(201).json({ success: true, update: getUpdate(result.updateId) });
   } catch (error) {
     cleanupTemporaryFiles(req.files);
     if (savedAttachments.length > 0) removeSavedAttachments(savedAttachments);

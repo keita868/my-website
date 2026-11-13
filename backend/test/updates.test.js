@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -63,12 +64,16 @@ async function csrfFor(cookie = '') {
 }
 
 async function login() {
+  return loginAs(adminEmail, adminPassword);
+}
+
+async function loginAs(email, password) {
   const initial = await csrfFor();
   return request('/api/auth/login', {
     method: 'POST',
     cookie: initial.cookie,
     csrf: initial.csrf,
-    body: { email: adminEmail, password: adminPassword }
+    body: { email, password }
   });
 }
 
@@ -140,11 +145,13 @@ test('requires authentication and CSRF protection for update management', async 
   const updatesPage = await request('/admin/updates', { cookie: adminLogin.cookie });
   const createPage = await request('/admin/updates/new', { cookie: adminLogin.cookie });
   const updatesScript = await request('/admin/assets/updates.js', { cookie: adminLogin.cookie });
+  const createScript = await request('/admin/assets/update-create.js', { cookie: adminLogin.cookie });
   assert.equal(updatesPage.response.status, 200);
   assert.match(updatesPage.data, /更新情報管理/);
   assert.equal(createPage.response.status, 200);
   assert.match(createPage.data, /id="update-form"/);
   assert.equal(updatesScript.response.status, 200);
+  assert.equal(createScript.response.status, 200);
   const unauthenticatedPost = await request('/api/admin/updates', {
     method: 'POST',
     cookie: adminLogin.cookie,
@@ -470,13 +477,236 @@ test('edits, schedules, attaches, withdraws, and deletes updates safely', async 
   assert.equal((await request(`/api/admin/updates/${updateId}`, { cookie: adminLogin.cookie })).response.status, 404);
 });
 
+test('rejects create and edit writes when the admin session is revoked during file upload', async () => {
+  const ownerLogin = await login();
+  assert.equal(ownerLogin.response.status, 200);
+  const ownerCsrf = await csrfFor(ownerLogin.cookie);
+
+  const secondOwnerCreate = await request('/api/admins', {
+    method: 'POST',
+    cookie: ownerCsrf.cookie,
+    csrf: ownerCsrf.csrf,
+    body: {
+      displayName: 'Second Owner',
+      email: 'second-owner@example.test',
+      password: 'second-owner-password-2026',
+      role: 'superadmin'
+    }
+  });
+  assert.equal(secondOwnerCreate.response.status, 201);
+  const secondOwnerLogin = await loginAs('second-owner@example.test', 'second-owner-password-2026');
+  const secondOwnerCsrf = await csrfFor(secondOwnerLogin.cookie);
+
+  async function createEditor(displayName, email) {
+    const result = await request('/api/admins', {
+      method: 'POST',
+      cookie: secondOwnerCsrf.cookie,
+      csrf: secondOwnerCsrf.csrf,
+      body: {
+        displayName,
+        email,
+        password: 'editor-revocation-password-2026',
+        role: 'admin'
+      }
+    });
+    assert.equal(result.response.status, 201);
+    const editorLogin = await loginAs(email, 'editor-revocation-password-2026');
+    return { id: result.data.admin.id, ...editorLogin, csrf: await csrfFor(editorLogin.cookie) };
+  }
+
+  async function slowMultipartRequest(pathname, method, editor, formFields, onPaused) {
+    const boundary = `cms-test-${randomUUID()}`;
+    const prefix = Object.entries(formFields).map(([name, value]) => (
+      `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`
+    )).join('')
+      + `--${boundary}\r\nContent-Disposition: form-data; name="attachments"; filename="race.gif"\r\nContent-Type: image/gif\r\n\r\n`;
+    const attachment = Buffer.alloc(1024 * 1024);
+    Buffer.from('GIF89a').copy(attachment);
+    const suffix = Buffer.from(`\r\n--${boundary}--\r\n`);
+    let releaseUpload;
+    let signalPaused;
+    const uploadMayContinue = new Promise((resolve) => { releaseUpload = resolve; });
+    const uploadIsPaused = new Promise((resolve) => { signalPaused = resolve; });
+    let sentPrefix = false;
+    let sentFile = false;
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(Buffer.from(prefix));
+        sentPrefix = true;
+      },
+      async pull(controller) {
+        if (!sentPrefix || sentFile) return;
+        sentFile = true;
+        signalPaused();
+        await uploadMayContinue;
+        controller.enqueue(attachment);
+        controller.enqueue(suffix);
+        controller.close();
+      }
+    });
+    const responsePromise = fetch(`${origin}${pathname}`, {
+      method,
+      headers: {
+        Cookie: editor.cookie,
+        'X-CSRF-Token': editor.csrf.csrf,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`
+      },
+      body: stream,
+      duplex: 'half',
+      redirect: 'manual'
+    });
+    await uploadIsPaused;
+    await onPaused();
+    releaseUpload();
+    return responsePromise;
+  }
+
+  const createEditorSession = await createEditor('Create Race', 'create-race@example.test');
+  const uploadFilesBeforeCreateRace = readdirSync(path.join(dataDirectory, 'uploads'));
+  const revokeEditor = async (editor) => {
+    const disabled = await request(`/api/admins/${editor.id}`, {
+      method: 'PATCH',
+      cookie: secondOwnerCsrf.cookie,
+      csrf: secondOwnerCsrf.csrf,
+      body: { isActive: false }
+    });
+    assert.equal(disabled.response.status, 200);
+  };
+  const createResponse = await slowMultipartRequest(
+    '/api/admin/updates',
+    'POST',
+    createEditorSession,
+    {
+      type: 'news',
+      title: 'revoked create must not persist',
+      body: 'revocation race',
+      status: 'draft'
+    },
+    () => revokeEditor(createEditorSession)
+  );
+  assert.equal(createResponse.status, 401);
+
+  const database = new Database(path.join(dataDirectory, 'cms.sqlite'));
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM updates WHERE title = ?')
+    .get('revoked create must not persist').count, 0);
+  assert.deepEqual(readdirSync(path.join(dataDirectory, 'uploads', '.tmp')), []);
+  assert.deepEqual(readdirSync(path.join(dataDirectory, 'uploads')), uploadFilesBeforeCreateRace);
+  database.close();
+
+  const editTarget = await request('/api/admin/updates', {
+    method: 'POST',
+    cookie: ownerLogin.cookie,
+    csrf: ownerCsrf.csrf,
+    body: { type: 'news', title: 'original title', body: 'original body', status: 'draft' }
+  });
+  assert.equal(editTarget.response.status, 201);
+  for (const editPath of [
+    `/admin/updates/${editTarget.data.update.id}/edit`,
+    `/admin/updates/${editTarget.data.update.id}/edit/`,
+    `/admin/updates/${editTarget.data.update.id}/EDIT`
+  ]) {
+    assert.equal((await request(editPath, { cookie: ownerLogin.cookie })).response.status, 200);
+  }
+  const editorScript = await request('/admin/assets/update-create.js', { cookie: ownerLogin.cookie });
+  assert.ok(editorScript.data.includes(String.raw`/^\/admin\/updates\/(\d+)\/edit\/?$/i`));
+  const parseEditPath = new RegExp('^\\/admin\\/updates\\/(\\d+)\\/edit\\/?$', 'i');
+  assert.equal(parseEditPath.exec(`/admin/updates/${editTarget.data.update.id}/edit/`)[1], String(editTarget.data.update.id));
+  assert.equal(parseEditPath.exec(`/admin/updates/${editTarget.data.update.id}/EDIT`)[1], String(editTarget.data.update.id));
+  const editEditorSession = await createEditor('Edit Race', 'edit-race@example.test');
+  const editResponse = await slowMultipartRequest(
+    `/api/admin/updates/${editTarget.data.update.id}`,
+    'PATCH',
+    editEditorSession,
+    {
+      type: 'news',
+      title: 'revoked edit must not persist',
+      body: 'revocation race',
+      scheduledAt: ''
+    },
+    () => revokeEditor(editEditorSession)
+  );
+  assert.equal(editResponse.status, 401);
+
+  const verifyDatabase = new Database(path.join(dataDirectory, 'cms.sqlite'));
+  const unchanged = verifyDatabase.prepare('SELECT title, body FROM updates WHERE id = ?')
+    .get(editTarget.data.update.id);
+  assert.deepEqual(unchanged, { title: 'original title', body: 'original body' });
+  assert.equal(verifyDatabase.prepare('SELECT COUNT(*) AS count FROM update_attachments WHERE update_id = ?')
+    .get(editTarget.data.update.id).count, 0);
+
+  const scheduledTarget = await request('/api/admin/updates', {
+    method: 'POST',
+    cookie: ownerLogin.cookie,
+    csrf: ownerCsrf.csrf,
+    body: {
+      type: 'news',
+      title: 'scheduled transition',
+      body: 'scheduled content',
+      status: 'scheduled',
+      scheduledAt: futureJstDateTime()
+    }
+  });
+  assert.equal(scheduledTarget.response.status, 201);
+  const scheduleEditor = await createEditor('Schedule Race', 'schedule-race@example.test');
+  const conflictResponse = await slowMultipartRequest(
+    `/api/admin/updates/${scheduledTarget.data.update.id}`,
+    'PATCH',
+    scheduleEditor,
+    {
+      type: 'news',
+      title: 'stale scheduled edit',
+      body: 'stale content',
+      scheduledAt: futureJstDateTime()
+    },
+    async () => {
+      const scheduleDatabase = new Database(path.join(dataDirectory, 'cms.sqlite'));
+      scheduleDatabase.prepare('UPDATE updates SET scheduled_at = ? WHERE id = ?')
+        .run(new Date(Date.now() - 1000).toISOString(), scheduledTarget.data.update.id);
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        const status = scheduleDatabase.prepare('SELECT status FROM updates WHERE id = ?')
+          .get(scheduledTarget.data.update.id).status;
+        if (status === 'published') break;
+        await delay(50);
+      }
+      const status = scheduleDatabase.prepare('SELECT status FROM updates WHERE id = ?')
+        .get(scheduledTarget.data.update.id).status;
+      scheduleDatabase.close();
+      assert.equal(status, 'published');
+    }
+  );
+  assert.equal(conflictResponse.status, 400);
+  assert.match((await conflictResponse.json()).error, /公開済み投稿を予約状態には変更できません/);
+
+  const postConflictDatabase = new Database(path.join(dataDirectory, 'cms.sqlite'));
+  const unchangedScheduled = postConflictDatabase.prepare('SELECT title, status, scheduled_at AS scheduledAt FROM updates WHERE id = ?')
+    .get(scheduledTarget.data.update.id);
+  assert.deepEqual(unchangedScheduled, { title: 'scheduled transition', status: 'published', scheduledAt: null });
+  assert.equal(postConflictDatabase.prepare('SELECT COUNT(*) AS count FROM update_attachments WHERE update_id = ?')
+    .get(scheduledTarget.data.update.id).count, 0);
+  postConflictDatabase.close();
+  verifyDatabase.close();
+});
+
 test('limits failed login attempts by account across client IP addresses', async () => {
   const initial = await csrfFor();
   for (let attempt = 0; attempt < 30; attempt += 1) {
-    const failedLogin = await request('/api/auth/login', {
+    const rejectedCsrf = await request('/api/auth/login', {
       method: 'POST',
       cookie: initial.cookie,
-      csrf: initial.csrf,
+      csrf: 'invalid-csrf-token',
+      forwardedFor: `192.0.2.${attempt + 1}`,
+      body: { email: adminEmail.toUpperCase(), password: 'incorrect-password' }
+    });
+    assert.equal(rejectedCsrf.response.status, 403);
+  }
+
+  const accountLimiterCsrf = await csrfFor(initial.cookie);
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const failedLogin = await request('/api/auth/login', {
+      method: 'POST',
+      cookie: accountLimiterCsrf.cookie,
+      csrf: accountLimiterCsrf.csrf,
       forwardedFor: `198.51.100.${attempt + 1}`,
       body: { email: adminEmail.toUpperCase(), password: 'incorrect-password' }
     });
@@ -484,8 +714,8 @@ test('limits failed login attempts by account across client IP addresses', async
   }
   const limitedLogin = await request('/api/auth/login', {
     method: 'POST',
-    cookie: initial.cookie,
-    csrf: initial.csrf,
+    cookie: accountLimiterCsrf.cookie,
+    csrf: accountLimiterCsrf.csrf,
     forwardedFor: '203.0.113.200',
     body: { email: adminEmail, password: 'incorrect-password' }
   });

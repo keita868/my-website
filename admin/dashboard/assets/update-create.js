@@ -8,7 +8,7 @@ const attachmentList = document.querySelector('#attachment-list');
 const pageTitle = document.querySelector('#page-title');
 const pageDescription = document.querySelector('#page-description');
 const scheduleField = document.querySelector('#schedule-field');
-const editMatch = /^\/admin\/updates\/(\d+)\/edit$/.exec(window.location.pathname);
+const editMatch = /^\/admin\/updates\/(\d+)\/edit\/?$/i.exec(window.location.pathname);
 const editUpdateId = editMatch?.[1];
 
 async function request(url, options = {}) {
