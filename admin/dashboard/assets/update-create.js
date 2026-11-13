@@ -14,6 +14,8 @@ let existingAttachmentCount = 0;
 let dirty = false;
 let saving = false;
 const selectedAttachments = document.querySelector('#selected-attachments');
+const loadError = document.querySelector('#editor-load-error');
+const retryLoad = document.querySelector('#editor-retry');
 let ready = false;
 updateForm.inert = true;
 updateForm.setAttribute('aria-busy', 'true');
@@ -163,6 +165,7 @@ updateForm.addEventListener('submit', async (event) => {
   body.set('body', fields.get('body'));
   if (!scheduleField.hidden && (editUpdateId || scheduled)) body.set('scheduledAt', fields.get('scheduledAt') || '');
   for (const file of attachmentInput.files) body.append('attachments', file);
+  updateForm.inert = true;
 
   try {
     const headers = await csrfHeaders();
@@ -192,6 +195,7 @@ updateForm.addEventListener('submit', async (event) => {
     submitButtons.forEach((button) => { button.disabled = false; });
     saving = false;
   } finally {
+    updateForm.inert = false;
     updateForm.removeAttribute('aria-busy');
     if (submitter) submitter.textContent = originalLabel;
   }
@@ -209,6 +213,7 @@ attachmentList.addEventListener('click', async (event) => {
     scheduledAt: updateForm.elements.scheduledAt.value
   };
   const wasDirty = dirty;
+  updateForm.inert = true;
   try {
     await request(`/api/admin/updates/${editUpdateId}/attachments/${button.dataset.attachmentId}`, {
       method: 'DELETE',
@@ -225,6 +230,8 @@ attachmentList.addEventListener('click', async (event) => {
   } catch (error) {
     updateError.textContent = error.message;
     button.disabled = false;
+  } finally {
+    updateForm.inert = false;
   }
 });
 
@@ -242,15 +249,23 @@ logoutButton.addEventListener('click', async () => {
   }
 });
 
-Promise.all([loadSession(), loadUpdate()])
-  .then(() => {
+async function initialize() {
+  retryLoad.hidden = true;
+  loadError.textContent = '読み込んでいます…';
+  updateForm.setAttribute('aria-busy', 'true');
+  try {
+    const results = await Promise.allSettled([loadSession(), loadUpdate()]);
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure) throw failure.reason;
     ready = true;
     updateForm.inert = false;
+    loadError.textContent = '';
+  } catch (error) {
+    loadError.textContent = `${error.message} 読み込みを完了できませんでした。再試行してください。`;
+    retryLoad.hidden = false;
+  } finally {
     updateForm.removeAttribute('aria-busy');
-  })
-  .catch((error) => {
-    updateForm.inert = false;
-    updateForm.removeAttribute('aria-busy');
-    updateError.textContent = `${error.message} 読み込みを完了できませんでした。画面を再読み込みしてください。`;
-    updateForm.querySelectorAll('button[type="submit"]').forEach((button) => { button.disabled = true; });
-  });
+  }
+}
+retryLoad.addEventListener('click', initialize);
+initialize();

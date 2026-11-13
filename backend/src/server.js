@@ -453,12 +453,17 @@ app.patch('/api/auth/me', requireAdmin, requireCsrf, (req, res) => {
   res.json({ admin: publicAdmin(req.admin) });
 });
 
-app.post('/api/auth/change-password', requireAdmin, requireCsrf, passwordChangeLimiter, async (req, res, next) => {
+function validatePasswordChange(req, res, next) {
+  const { currentPassword, newPassword } = req.body ?? {};
+  if (typeof currentPassword !== 'string' || currentPassword.length === 0 || currentPassword.length > 1024 || !validPassword(newPassword)) {
+    return res.status(400).json({ error: '現在のパスワードと12文字以上の新しいパスワードを入力してください。' });
+  }
+  next();
+}
+
+app.post('/api/auth/change-password', requireAdmin, requireCsrf, validatePasswordChange, passwordChangeLimiter, async (req, res, next) => {
   try {
-    const { currentPassword, newPassword } = req.body ?? {};
-    if (typeof currentPassword !== 'string' || currentPassword.length > 1024 || !validPassword(newPassword)) {
-      return res.status(400).json({ error: '現在のパスワードと12文字以上の新しいパスワードを入力してください。' });
-    }
+    const { currentPassword, newPassword } = req.body;
 
     const account = database.prepare('SELECT password_hash FROM admins WHERE id = ?').get(req.admin.id);
     if (!await argon2.verify(account.password_hash, currentPassword)) {

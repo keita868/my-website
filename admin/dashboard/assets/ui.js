@@ -1,7 +1,8 @@
 (() => {
+  let authenticationGeneration = 0;
   function showSessionNotice() {
-    document.querySelectorAll('input[type="password"], input[data-password]').forEach((input) => { input.value = ''; });
     if (document.querySelector('#session-notice')) return;
+    document.querySelectorAll('input[type="password"], input[data-password]').forEach((input) => { input.value = ''; });
     const notice = document.createElement('div');
     notice.id = 'session-notice';
     notice.className = 'session-notice';
@@ -19,6 +20,7 @@
   }
 
   async function request(url, options = {}) {
+    const generation = authenticationGeneration;
     let response;
     try {
       response = await fetch(url, { credentials: 'same-origin', ...options });
@@ -26,6 +28,7 @@
       throw new Error('通信できませんでした。接続を確認してください。保存操作の場合は一覧で保存状況を確認してから再度お試しください。');
     }
     if (response.status === 401) {
+      authenticationGeneration += 1;
       showSessionNotice();
       throw new Error('ログインの有効期限が切れました。別タブでログインしてください。');
     }
@@ -41,7 +44,9 @@
         ? ` 約${Math.ceil(seconds / 60)}分後に再度お試しください。` : '';
       throw new Error((data.error || 'リクエストに失敗しました。') + wait);
     }
-    if (url !== '/api/auth/csrf') document.querySelector('#session-notice')?.remove();
+    if (url !== '/api/auth/csrf' && generation === authenticationGeneration) {
+      document.querySelector('#session-notice')?.remove();
+    }
     return data;
   }
 

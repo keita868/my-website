@@ -239,6 +239,7 @@ button:disabled { cursor: wait; opacity: .65; }
 }
 
 .secondary-button:hover { background: #f8f3f0; }
+.secondary-button[hidden] { display: none; }
 
 .account-panel { max-width: 620px; }
 

@@ -43,7 +43,7 @@ const revokeSession = database.prepare('INSERT OR REPLACE INTO revoked_sessions 
 const revokedSession = database.prepare('SELECT 1 FROM revoked_sessions WHERE sid = ?');
 const pruneRevocations = database.prepare('DELETE FROM revoked_sessions WHERE expired < ?');
 const saveSession = database.transaction((sessionId, value) => {
-  if (!revokedSession.get(sessionId)) {
+  if (expiresAt(value) > Date.now() && !revokedSession.get(sessionId)) {
     setSession.run(sessionId, expiresAt(value), JSON.stringify(value));
   }
 });
@@ -64,31 +64,33 @@ class SQLiteSessionStore extends session.Store {
   }
 
   get(sessionId, callback) {
+    let result;
     try {
       const row = getSession.get(sessionId, Date.now());
       const value = row ? JSON.parse(row.sess) : null;
-      callback(null, value?.adminId && authenticationExpiresAt(value) <= Date.now() ? null : value);
+      result = value?.adminId && authenticationExpiresAt(value) <= Date.now() ? null : value;
     } catch (error) {
-      callback(error);
+      return callback(error);
     }
+    callback(null, result);
   }
 
   set(sessionId, value, callback = () => {}) {
     try {
       saveSession.immediate(sessionId, value);
-      callback(null);
     } catch (error) {
-      callback(error);
+      return callback(error);
     }
+    callback(null);
   }
 
   touch(sessionId, value, callback = () => {}) {
     try {
       touchSession.run(expiresAt(value), sessionId, Date.now());
-      callback(null);
     } catch (error) {
-      callback(error);
+      return callback(error);
     }
+    callback(null);
   }
 
   destroy(sessionId, callback = () => {}) {
@@ -97,10 +99,10 @@ class SQLiteSessionStore extends session.Store {
         revokeSession.run(sessionId, Date.now() + 24 * 60 * 60 * 1000);
         destroySession.run(sessionId);
       })();
-      callback(null);
     } catch (error) {
-      callback(error);
+      return callback(error);
     }
+    callback(null);
   }
 }
 

@@ -515,6 +515,7 @@ test('rejects create and edit writes when the admin session is revoked during fi
   }
 
   async function slowMultipartRequest(pathname, method, editor, formFields, onPaused) {
+    assert.deepEqual(readdirSync(path.join(dataDirectory, 'uploads', '.tmp')), []);
     const boundary = `cms-test-${randomUUID()}`;
     const prefix = Object.entries(formFields).map(([name, value]) => (
       `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`

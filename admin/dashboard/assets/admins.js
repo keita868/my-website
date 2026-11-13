@@ -4,6 +4,8 @@ const createForm = document.querySelector('#create-form');
 const createError = document.querySelector('#create-error');
 const emailElement = document.querySelector('#admin-email');
 const logoutButton = document.querySelector('#logout-button');
+let ready = false;
+createForm.inert = true;
 
 const request = window.cmsUI.request;
 
@@ -87,10 +89,13 @@ async function loadPage() {
   const fragment = document.createDocumentFragment();
   for (const admin of admins) fragment.append(renderAdmin(admin));
   adminList.replaceChildren(fragment);
+  ready = true;
+  createForm.inert = false;
 }
 
 createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!ready) return;
   createError.textContent = '';
   delete createError.dataset.success;
   const button = createForm.querySelector('button[type="submit"]');
@@ -152,5 +157,5 @@ logoutButton.addEventListener('click', async () => {
 });
 
 loadPage().catch((error) => {
-  listError.textContent = error.message;
+  listError.textContent = `${error.message} 管理者一覧を読み込めませんでした。画面を再読み込みしてください。`;
 });

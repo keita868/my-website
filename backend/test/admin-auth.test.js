@@ -25,6 +25,7 @@ let origin;
 let ownerId;
 let editorId;
 let childOutput = '';
+const forbiddenLogValues = [];
 
 async function freePort() {
   const listener = net.createServer();
@@ -132,9 +133,10 @@ before(async () => {
 after(async () => {
   if (server && server.exitCode === null) {
     server.kill('SIGTERM');
-    await once(server, 'exit');
+    await once(server, 'close');
   }
   rmSync(dataDirectory, { recursive: true, force: true });
+  for (const marker of forbiddenLogValues) assert.equal(childOutput.includes(marker), false);
 });
 
 test('preserves legacy accounts and enforces auth, role, account management, and password security', async () => {
@@ -408,20 +410,20 @@ test('preserves legacy accounts and enforces auth, role, account management, and
 });
 
 test('expires active sessions at the absolute lifetime and protects pages as well as APIs', async () => {
-  const loggedIn = await login(ownerEmail, ownerPassword);
-  assert.equal(loggedIn.response.status, 200);
-  const sid = decodeURIComponent(loggedIn.cookie.slice('cms.sid='.length)).slice(2).split('.')[0];
-  const db = new Database(path.join(dataDirectory, 'sessions.sqlite'));
-  const value = JSON.parse(db.prepare('SELECT sess FROM sessions WHERE sid = ?').get(sid).sess);
-  assert.ok(Number.isSafeInteger(value.authenticatedAt));
-  assert.ok(value.cookie.originalMaxAge <= 30 * 60 * 1000);
-  value.authenticatedAt = Date.now() - 8 * 60 * 60 * 1000 - 1000;
-  // A recent idle expiry must not extend the absolute lifetime.
-  db.prepare('UPDATE sessions SET sess = ?, expired = ? WHERE sid = ?')
-    .run(JSON.stringify(value), Date.now() + 30 * 60 * 1000, sid);
-  db.close();
-  assert.equal((await request('/admin', { cookie: loggedIn.cookie })).response.status, 302);
-  assert.equal((await request('/api/auth/me', { cookie: loggedIn.cookie })).response.status, 401);
+  for (const [route, status] of [['/admin', 302], ['/api/auth/me', 401]]) {
+    const loggedIn = await login(ownerEmail, ownerPassword);
+    assert.equal(loggedIn.response.status, 200);
+    const sid = decodeURIComponent(loggedIn.cookie.slice('cms.sid='.length)).slice(2).split('.')[0];
+    const db = new Database(path.join(dataDirectory, 'sessions.sqlite'));
+    const value = JSON.parse(db.prepare('SELECT sess FROM sessions WHERE sid = ?').get(sid).sess);
+    assert.ok(Number.isSafeInteger(value.authenticatedAt));
+    assert.ok(value.cookie.originalMaxAge <= 30 * 60 * 1000);
+    value.authenticatedAt = Date.now() - 8 * 60 * 60 * 1000 - 1000;
+    db.prepare('UPDATE sessions SET sess = ?, expired = ? WHERE sid = ?')
+      .run(JSON.stringify(value), Date.now() + 30 * 60 * 1000, sid);
+    db.close();
+    assert.equal((await request(route, { cookie: loggedIn.cookie })).response.status, status);
+  }
 });
 
 test('limits password guesses across sessions and IP addresses after CSRF validation', async () => {
@@ -433,6 +435,21 @@ test('limits password guesses across sessions and IP addresses after CSRF valida
       method: 'POST', ...tokens[0], csrf: 'invalid-token', body
     })).response.status, 403);
   }
+  for (const invalid of [{}, { currentPassword: '', newPassword: 'valid-new-password' }, { currentPassword: 'x'.repeat(1025), newPassword: 'valid-new-password' }]) {
+    for (let attempt = 0; attempt < 11; attempt++) {
+      assert.equal((await request('/api/auth/change-password', {
+        method: 'POST', ...tokens[0], body: invalid
+      })).response.status, 400);
+    }
+  }
+  const otherEmail = 'limiter-isolation@example.test';
+  const otherPassword = 'other-account-password-2026';
+  assert.equal((await request('/api/admins', {
+    method: 'POST', ...tokens[0], body: { displayName: 'Other', email: otherEmail, password: otherPassword }
+  })).response.status, 201);
+  const otherLogin = await login(otherEmail, otherPassword);
+  assert.equal(otherLogin.response.status, 200);
+  const otherToken = await csrfFor(otherLogin.cookie);
   for (let attempt = 0; attempt < 10; attempt += 1) {
     assert.equal((await request('/api/auth/change-password', {
       method: 'POST', ...tokens[attempt % 2], forwardedFor: `192.0.2.${attempt + 1}`, body
@@ -441,6 +458,9 @@ test('limits password guesses across sessions and IP addresses after CSRF valida
   assert.equal((await request('/api/auth/change-password', {
     method: 'POST', ...tokens[1], forwardedFor: '203.0.113.100', body
   })).response.status, 429);
+  assert.equal((await request('/api/auth/change-password', {
+    method: 'POST', ...otherToken, body
+  })).response.status, 400);
 });
 
 test('does not log submitted secrets from malformed JSON', async () => {
@@ -450,6 +470,5 @@ test('does not log submitted secrets from malformed JSON', async () => {
     body: `{"password":"${marker}" invalid}`
   });
   assert.equal(response.status, 400);
-  await delay(50);
-  assert.equal(childOutput.includes(marker), false);
+  forbiddenLogValues.push(marker); // Check after child stdout/stderr have closed in after().
 });

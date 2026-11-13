@@ -7,9 +7,11 @@ const logoutButton = document.querySelector('#logout-button');
 const searchInput = document.querySelector('#update-search');
 const statusInput = document.querySelector('#update-status');
 const updateCount = document.querySelector('#update-count');
-let allUpdates = [];
+let allUpdates = null;
+updateCount.textContent = '投稿を読み込んでいます…';
 
 function renderList() {
+  if (allUpdates === null) return;
   const query = searchInput.value.trim().toLocaleLowerCase('ja-JP');
   const updates = allUpdates.filter((update) => {
     const status = update.status === 'published' ? 'published' : update.scheduledAt ? 'scheduled' : 'draft';

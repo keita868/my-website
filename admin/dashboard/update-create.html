@@ -36,6 +36,8 @@
       <p id="page-description">投稿種別、タイトル、本文を入力し、下書き保存、予約公開または公開を行います。</p>
     </section>
     <section class="panel" aria-label="新規投稿フォーム">
+      <p class="form-error" id="editor-load-error" role="status"></p>
+      <button class="secondary-button" id="editor-retry" type="button" hidden>読み込みを再試行</button>
       <form class="update-form" id="update-form">
         <label>投稿種別
           <select name="type" required>
