@@ -207,5 +207,6 @@ if (result.get('created') === '1') {
 }
 
 loadPage().catch((error) => {
+  if (allUpdates === null) updateCount.textContent = '投稿を読み込めませんでした。';
   updatesError.textContent = error.message;
 });

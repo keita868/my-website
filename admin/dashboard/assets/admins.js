@@ -4,6 +4,7 @@ const createForm = document.querySelector('#create-form');
 const createError = document.querySelector('#create-error');
 const emailElement = document.querySelector('#admin-email');
 const logoutButton = document.querySelector('#logout-button');
+const retryList = document.querySelector('#admin-list-retry');
 let ready = false;
 createForm.inert = true;
 
@@ -81,17 +82,35 @@ function createInput(name, labelText, value, type) {
 }
 
 async function loadPage() {
-  const [{ admin: me }, { admins }] = await Promise.all([
-    request('/api/auth/me'),
-    request('/api/admins')
-  ]);
+  const { admin: me } = await request('/api/auth/me');
+  if (me.role !== 'superadmin') throw new Error('管理者を追加する権限がありません。');
   emailElement.textContent = me.displayName || me.email;
-  const fragment = document.createDocumentFragment();
-  for (const admin of admins) fragment.append(renderAdmin(admin));
-  adminList.replaceChildren(fragment);
   ready = true;
   createForm.inert = false;
+  await loadList();
 }
+
+async function loadList() {
+  if (retryList.disabled) return;
+  retryList.disabled = true;
+  retryList.hidden = true;
+  listError.textContent = '管理者一覧を読み込んでいます…';
+  delete listError.dataset.success;
+  try {
+    const { admins } = await request('/api/admins');
+    // Keep local edits and rows added while this request was pending.
+    for (const admin of admins) {
+      if (!adminList.querySelector(`.admin-edit-form[data-id="${admin.id}"]`)) adminList.append(renderAdmin(admin));
+    }
+    listError.textContent = '';
+  } catch (error) {
+    listError.textContent = `${error.message} 管理者一覧を読み込めませんでした。再試行してください。`;
+    retryList.hidden = false;
+  } finally {
+    retryList.disabled = false;
+  }
+}
+retryList.addEventListener('click', loadList);
 
 createForm.addEventListener('submit', async (event) => {
   event.preventDefault();

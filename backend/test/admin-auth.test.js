@@ -25,6 +25,7 @@ let origin;
 let ownerId;
 let editorId;
 let childOutput = '';
+let serverClosed;
 const forbiddenLogValues = [];
 
 async function freePort() {
@@ -116,6 +117,7 @@ before(async () => {
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
+  serverClosed = new Promise((resolve) => server.once('close', resolve));
   server.stdout.setEncoding('utf8').on('data', (chunk) => { childOutput += chunk; });
   server.stderr.setEncoding('utf8').on('data', (chunk) => { childOutput += chunk; });
 
@@ -133,8 +135,8 @@ before(async () => {
 after(async () => {
   if (server && server.exitCode === null) {
     server.kill('SIGTERM');
-    await once(server, 'close');
   }
+  await serverClosed;
   rmSync(dataDirectory, { recursive: true, force: true });
   for (const marker of forbiddenLogValues) assert.equal(childOutput.includes(marker), false);
 });

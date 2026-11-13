@@ -101,15 +101,17 @@ function renderAttachments(attachments) {
   }
 }
 
-async function loadSession() {
-  const { admin } = await request('/api/auth/me');
+async function loadSession(options = {}) {
+  const { admin } = await request('/api/auth/me', options);
+  if (options.signal?.aborted) return;
   emailElement.textContent = admin.displayName || admin.email;
   adminsLink.hidden = admin.role !== 'superadmin';
 }
 
-async function loadUpdate() {
+async function loadUpdate(options = {}) {
   if (!editUpdateId) return;
-  const { update } = await request(`/api/admin/updates/${editUpdateId}`);
+  const { update } = await request(`/api/admin/updates/${editUpdateId}`, options);
+  if (options.signal?.aborted) return;
   pageTitle.textContent = '投稿を編集';
   pageDescription.textContent = '投稿内容と添付ファイルを編集できます。';
   document.title = '投稿を編集 | 九州工業大学交響楽団';
@@ -250,20 +252,29 @@ logoutButton.addEventListener('click', async () => {
 });
 
 async function initialize() {
+  if (retryLoad.disabled) return;
+  retryLoad.disabled = true;
+  const controller = new AbortController();
+  let timeout;
   retryLoad.hidden = true;
   loadError.textContent = '読み込んでいます…';
   updateForm.setAttribute('aria-busy', 'true');
   try {
-    const results = await Promise.allSettled([loadSession(), loadUpdate()]);
-    const failure = results.find((result) => result.status === 'rejected');
-    if (failure) throw failure.reason;
+    const timedOut = new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(new Error('読み込みがタイムアウトしました。')), 15000);
+    });
+    const options = { signal: controller.signal };
+    await Promise.race([Promise.all([loadSession(options), loadUpdate(options)]), timedOut]);
     ready = true;
     updateForm.inert = false;
     loadError.textContent = '';
   } catch (error) {
+    controller.abort();
     loadError.textContent = `${error.message} 読み込みを完了できませんでした。再試行してください。`;
     retryLoad.hidden = false;
   } finally {
+    clearTimeout(timeout);
+    retryLoad.disabled = false;
     updateForm.removeAttribute('aria-busy');
   }
 }

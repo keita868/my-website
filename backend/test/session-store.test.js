@@ -38,12 +38,15 @@ test('touch clamps an existing session to its absolute expiry before and after t
   let now = started;
   t.mock.method(Date, 'now', () => now);
   const stale = value(started);
+  stale.cookie.expires = new Date(started + hour).toISOString();
   await call('set', 'touch-boundary', stale);
   assert.ok(await call('get', 'touch-boundary'));
-  now += 8 * hour - 1000;
+  assert.equal(db.prepare('SELECT expired FROM sessions WHERE sid = ?').get('touch-boundary').expired, started + hour);
+  now += hour - 1000;
+  stale.cookie.expires = new Date(started + 9 * hour).toISOString();
   await call('touch', 'touch-boundary', stale);
   assert.equal(db.prepare('SELECT expired FROM sessions WHERE sid = ?').get('touch-boundary').expired, started + 8 * hour);
-  now += 2000;
+  now = started + 8 * hour + 1000;
   await call('touch', 'touch-boundary', stale);
   assert.equal(await call('get', 'touch-boundary'), null);
   assert.equal(sessionStore.isActive('touch-boundary'), false);
@@ -56,8 +59,10 @@ test('expired and legacy authentication cannot be saved, even after revocations 
   const stale = value(started);
   await call('set', 'pruned', stale);
   await call('destroy', 'pruned');
+  assert.ok(db.prepare('SELECT 1 FROM revoked_sessions WHERE sid = ?').get('pruned'));
   now += 25 * hour;
   db.prepare('DELETE FROM revoked_sessions WHERE expired < ?').run(now);
+  assert.equal(db.prepare('SELECT 1 FROM revoked_sessions WHERE sid = ?').get('pruned'), undefined);
   stale.cookie.expires = new Date(now + hour).toISOString();
   await call('set', 'pruned', stale);
   assert.equal(await call('get', 'pruned'), null);

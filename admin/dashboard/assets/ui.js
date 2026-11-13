@@ -1,8 +1,8 @@
 (() => {
   let authenticationGeneration = 0;
   function showSessionNotice() {
-    if (document.querySelector('#session-notice')) return;
     document.querySelectorAll('input[type="password"], input[data-password]').forEach((input) => { input.value = ''; });
+    if (document.querySelector('#session-notice')) return;
     const notice = document.createElement('div');
     notice.id = 'session-notice';
     notice.className = 'session-notice';
@@ -28,8 +28,10 @@
       throw new Error('通信できませんでした。接続を確認してください。保存操作の場合は一覧で保存状況を確認してから再度お試しください。');
     }
     if (response.status === 401) {
-      authenticationGeneration += 1;
-      showSessionNotice();
+      if (generation === authenticationGeneration) {
+        authenticationGeneration += 1;
+        showSessionNotice();
+      }
       throw new Error('ログインの有効期限が切れました。別タブでログインしてください。');
     }
     let data;
