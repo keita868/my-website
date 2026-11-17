@@ -893,15 +893,16 @@ test('a save interleaved after revision validation rejects the upload and remove
   form.append('attachments', new Blob(['%PDF-1.4\n'], { type: 'application/pdf' }), 'race.pdf');
   let losing;
   let losingOutcome;
+  const losingController = new AbortController();
   try {
     const armed = once(server, 'message', { signal: AbortSignal.timeout(5000) });
     server.send('arm-upload-barrier');
     assert.equal((await armed)[0], 'upload-barrier-armed');
     const paused = once(server, 'message', { signal: AbortSignal.timeout(5000) });
-    // Attach both handlers immediately so an early timeout cannot become an
+    // Attach both handlers immediately so an upload failure cannot become an
     // unhandled rejection while the competing request is still pending.
     losing = request(pathname, {
-      method: 'PATCH', ...csrf, expectedRevision: 0, body: form, signal: AbortSignal.timeout(10000)
+      method: 'PATCH', ...csrf, expectedRevision: 0, body: form, signal: losingController.signal
     }).then((result) => ({ result }), (error) => ({ error }));
     assert.equal((await paused)[0], 'upload-barrier-paused');
     const winner = await request(pathname, {
@@ -910,8 +911,15 @@ test('a save interleaved after revision validation rejects the upload and remove
     });
     assert.equal(winner.response.status, 200);
   } finally {
-    server.send('release-upload-barrier');
-    losingOutcome = await losing;
+    // Give the losing request its full response budget after releasing the
+    // barrier, independently of the pause notification and winner deadlines.
+    const responseTimeout = setTimeout(() => losingController.abort(new Error('Losing upload response timed out')), 5000);
+    try {
+      server.send('release-upload-barrier');
+      losingOutcome = await losing;
+    } finally {
+      clearTimeout(responseTimeout);
+    }
   }
   if (losingOutcome.error) throw losingOutcome.error;
   assert.equal(losingOutcome.result.response.status, 409);

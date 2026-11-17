@@ -128,3 +128,39 @@ test('adding and removing an option restores selection even before mutation call
     assert.equal(new fixture.FormData(form).get('choice'), 'a');
   }
 });
+
+test('empty optgroup changes preserve a cleared selection until an option is added', async () => {
+  const fixture = page('account');
+  for (const waitForCallback of [false, true]) {
+    const form = fixture.document.createElement('form');
+    form.innerHTML = '<select name="choice"><option value="a">A</option></select>';
+    const select = form.querySelector('select');
+    fixture.document.body.append(form);
+    select.value = 'missing';
+    const group = fixture.document.createElement('optgroup');
+    group.label = 'Empty';
+    select.append(group);
+    if (waitForCallback) await flush();
+    assert.equal(select.value, '');
+    assert.equal(new fixture.FormData(form).has('choice'), false);
+    group.remove();
+    if (waitForCallback) await flush();
+    assert.equal(select.value, '');
+    select.append(group);
+    group.append(fixture.document.createElement('option'));
+    if (waitForCallback) await flush();
+    assert.equal(select.value, 'a');
+    assert.equal(new fixture.FormData(form).get('choice'), 'a');
+  }
+});
+
+test('removing the selected option restores the first remaining option', () => {
+  const fixture = page('account');
+  const form = fixture.document.createElement('form');
+  form.innerHTML = '<select name="choice"><option value="a">A</option><option value="b">B</option></select>';
+  const select = form.querySelector('select');
+  select.value = 'b';
+  select.querySelector('option[selected]').remove();
+  assert.equal(select.value, 'a');
+  assert.equal(new fixture.FormData(form).get('choice'), 'a');
+});

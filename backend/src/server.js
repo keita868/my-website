@@ -10,13 +10,15 @@ import helmet from 'helmet';
 import { dataDirectory, database } from './database.js';
 import { sessionStore } from './session-store.js';
 import { authenticationExpiresAt, idleTimeoutMs } from './session-policy.js';
+import { acquireServerOwnership } from './server-ownership.js';
 import {
   attachmentPath,
   attachmentUpload,
-  cleanupOrphanedAttachments,
+  beginAttachmentUpload,
   cleanupTemporaryFiles,
   deleteStoredAttachment,
-  persistAttachments
+  persistAttachments,
+  startAttachmentCleanup
 } from './update-files.js';
 
 const app = express();
@@ -28,7 +30,8 @@ if (!sessionSecret || sessionSecret.length < 32) {
   throw new Error('CMS_SESSION_SECRETには32文字以上のランダムな値を設定してください。');
 }
 
-cleanupOrphanedAttachments();
+acquireServerOwnership();
+startAttachmentCleanup();
 
 const dummyPasswordHash = await argon2.hash(randomBytes(32).toString('hex'), { type: argon2.argon2id });
 
@@ -291,8 +294,10 @@ function parseJstDateTime(value) {
 }
 
 function receiveAttachments(req, res, next) {
+  req.finishAttachmentUpload = beginAttachmentUpload();
   attachmentUpload.array('attachments', 5)(req, res, (error) => {
     if (error) {
+      req.finishAttachmentUpload();
       error.status = [
         'LIMIT_FILE_SIZE',
         'LIMIT_FILE_COUNT',
@@ -303,6 +308,16 @@ function receiveAttachments(req, res, next) {
     }
     next();
   });
+}
+
+function finishAttachments(handler) {
+  return async (req, res, next) => {
+    try {
+      await handler(req, res, next);
+    } finally {
+      req.finishAttachmentUpload();
+    }
+  };
 }
 
 function removeSavedAttachments(attachments) {
@@ -747,7 +762,7 @@ app.post('/api/admin/updates/:id/unpublish', requireAdmin, requireCsrf, requireU
   res.json({ success: true, update: getUpdate(updateId) });
 });
 
-app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, requireUpdateRevision, receiveAttachments, async (req, res, next) => {
+app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, requireUpdateRevision, receiveAttachments, finishAttachments(async (req, res, next) => {
   const updateId = Number(req.params.id);
   if (!Number.isSafeInteger(updateId) || updateId < 1) {
     cleanupTemporaryFiles(req.files);
@@ -862,7 +877,7 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, requireUpdateRevi
     if (savedAttachments.length > 0) removeSavedAttachments(savedAttachments);
     next(error);
   }
-});
+}));
 
 app.delete('/api/admin/updates/:id/attachments/:attachmentId', requireAdmin, requireCsrf, (req, res) => {
   const updateId = Number(req.params.id);
@@ -895,7 +910,7 @@ app.delete('/api/admin/updates/:id', requireAdmin, requireCsrf, (req, res) => {
   res.status(204).end();
 });
 
-app.post('/api/admin/updates', requireAdmin, requireCsrf, receiveAttachments, async (req, res, next) => {
+app.post('/api/admin/updates', requireAdmin, requireCsrf, receiveAttachments, finishAttachments(async (req, res, next) => {
   const { type, title, body, status, scheduledAt: scheduledAtInput = '' } = req.body ?? {};
   if (!['news', 'notice'].includes(type)
     || !['draft', 'published', 'scheduled'].includes(status)
@@ -977,7 +992,7 @@ app.post('/api/admin/updates', requireAdmin, requireCsrf, receiveAttachments, as
     if (savedAttachments.length > 0) removeSavedAttachments(savedAttachments);
     next(error);
   }
-});
+}));
 
 app.post('/api/auth/logout', requireCsrf, (req, res, next) => {
   req.session.destroy((error) => {

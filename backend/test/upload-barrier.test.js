@@ -32,8 +32,14 @@ test('arming while armed or paused is rejected without losing the paused upload'
   // Re-arming before the old continuation runs must not erase the new resolver.
   barrier.handleMessage('arm-upload-barrier');
   const next = barrier.pause();
+  assert.ok(next instanceof Promise);
+  assert.deepEqual(notifications.slice(-2), ['upload-barrier-armed', 'upload-barrier-paused']);
+  let nextResolved = false;
+  next.then(() => { nextResolved = true; });
   await paused;
+  assert.equal(nextResolved, false);
   barrier.handleMessage('release-upload-barrier');
   await next;
+  assert.equal(nextResolved, true);
   assert.equal(barrier.pause(), undefined);
 });

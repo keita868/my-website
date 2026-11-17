@@ -13,7 +13,7 @@ function trackClearedSelect(select, MutationObserver) {
   clearSelectTracking(select);
   const processChanges = (records) => {
     if (records.some((record) => [...record.addedNodes, ...record.removedNodes].some((node) => (
-      node.matches?.('option, optgroup') || node.querySelector?.('option')
+      node.matches?.('option') || node.querySelector?.('option')
     )))) clearSelectTracking(select);
   };
   const observer = new MutationObserver(processChanges);
