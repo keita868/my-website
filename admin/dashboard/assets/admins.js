@@ -4,21 +4,28 @@ const createForm = document.querySelector('#create-form');
 const createError = document.querySelector('#create-error');
 const emailElement = document.querySelector('#admin-email');
 const logoutButton = document.querySelector('#logout-button');
+const retryList = document.querySelector('#admin-list-retry');
+let ready = false;
+let creating = false;
+const savingForms = new WeakSet();
+createForm.inert = true;
 
-async function request(url, options = {}) {
-  const response = await fetch(url, { credentials: 'same-origin', ...options });
-  if (response.status === 401) {
-    window.location.replace('/admin/login');
-    throw new Error('ログインが必要です。');
-  }
-  const data = response.status === 204 ? {} : await response.json();
-  if (!response.ok) throw new Error(data.error || 'リクエストに失敗しました。');
-  return data;
-}
+const request = window.cmsUI.request;
 
 async function csrfHeaders() {
   const { csrfToken } = await request('/api/auth/csrf');
   return { 'X-CSRF-Token': csrfToken };
+}
+
+// Inert removes keyboard focus; restore it after a failed save unless the user moved it.
+function lockForm(form) {
+  const focused = document.activeElement;
+  form.inert = true;
+  return (failed) => {
+    form.inert = false;
+    if (failed && focused && form.contains(focused)
+      && (!document.activeElement || document.activeElement === document.body)) focused.focus();
+  };
 }
 
 function renderAdmin(admin) {
@@ -68,8 +75,11 @@ function renderAdmin(admin) {
   save.type = 'submit';
   save.textContent = '変更を保存';
   actions.append(status, save);
+  const message = document.createElement('p');
+  message.className = 'form-error admin-save-message';
+  message.setAttribute('role', 'status');
   form.append(fields, actions);
-  item.append(form);
+  item.append(form, message);
   return item;
 }
 
@@ -87,34 +97,73 @@ function createInput(name, labelText, value, type) {
   return label;
 }
 
-async function loadPage() {
-  const [{ admin: me }, { admins }] = await Promise.all([
-    request('/api/auth/me'),
-    request('/api/admins')
-  ]);
-  emailElement.textContent = me.displayName || me.email;
-  const fragment = document.createDocumentFragment();
-  for (const admin of admins) fragment.append(renderAdmin(admin));
-  adminList.replaceChildren(fragment);
+function appendAdminIfMissing(admin) {
+  if (!adminList.querySelector(`.admin-edit-form[data-id="${admin.id}"]`)) {
+    adminList.append(renderAdmin(admin));
+  }
 }
+
+async function loadPage() {
+  const { admin: me } = await request('/api/auth/me');
+  if (me.role !== 'superadmin') throw new Error('管理者を追加する権限がありません。');
+  emailElement.textContent = me.displayName || me.email;
+  ready = true;
+  createForm.inert = false;
+  await loadList();
+}
+
+async function loadList() {
+  if (retryList.disabled) return;
+  retryList.disabled = true;
+  retryList.hidden = true;
+  listError.textContent = '管理者一覧を読み込んでいます…';
+  delete listError.dataset.success;
+  try {
+    const { admins } = await request('/api/admins');
+    // Keep local edits and rows added while this request was pending.
+    for (const admin of admins) {
+      appendAdminIfMissing(admin);
+    }
+    listError.textContent = '';
+  } catch (error) {
+    listError.textContent = `${error.message} 管理者一覧を読み込めませんでした。再試行してください。`;
+    retryList.hidden = false;
+  } finally {
+    retryList.disabled = false;
+  }
+}
+retryList.addEventListener('click', loadList);
 
 createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!ready || creating) return;
+  creating = true;
+  const unlock = lockForm(createForm);
+  let failed = true;
+  createForm.setAttribute('aria-busy', 'true');
   createError.textContent = '';
+  delete createError.dataset.success;
   const button = createForm.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
-    await request('/api/admins', {
+    const fields = Object.fromEntries(new FormData(createForm));
+    const { admin } = await request('/api/admins', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...await csrfHeaders() },
-      body: JSON.stringify(Object.fromEntries(new FormData(createForm)))
+      body: JSON.stringify(fields)
     });
+    failed = false;
     createForm.reset();
-    await loadPage();
+    appendAdminIfMissing(admin);
+    createError.dataset.success = '';
+    createError.textContent = '管理者を追加しました。';
   } catch (error) {
     createError.textContent = error.message;
   } finally {
+    creating = false;
     button.disabled = false;
+    unlock(failed);
+    createForm.removeAttribute('aria-busy');
   }
 });
 
@@ -122,12 +171,20 @@ adminList.addEventListener('submit', async (event) => {
   if (!event.target.matches('.admin-edit-form')) return;
   event.preventDefault();
   const form = event.target;
+  if (savingForms.has(form)) return;
+  savingForms.add(form);
+  const unlock = lockForm(form);
+  let failed = true;
+  form.setAttribute('aria-busy', 'true');
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
-  listError.textContent = '';
+  const row = form.closest('.admin-row');
+  const message = row.querySelector('.admin-save-message');
+  message.textContent = '';
+  delete message.dataset.success;
   try {
     const fields = new FormData(form);
-    await request(`/api/admins/${form.dataset.id}`, {
+    const { admin } = await request(`/api/admins/${form.dataset.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...await csrfHeaders() },
       body: JSON.stringify({
@@ -137,11 +194,17 @@ adminList.addEventListener('submit', async (event) => {
         isActive: fields.get('isActive') === 'on'
       })
     });
-    await loadPage();
+    failed = false;
+    form.replaceWith(renderAdmin(admin).querySelector('form'));
+    message.dataset.success = '';
+    message.textContent = '変更を保存しました。';
   } catch (error) {
-    listError.textContent = error.message;
+    message.textContent = error.message;
   } finally {
+    savingForms.delete(form);
     button.disabled = false;
+    unlock(failed);
+    form.removeAttribute('aria-busy');
   }
 });
 
@@ -155,5 +218,5 @@ logoutButton.addEventListener('click', async () => {
 });
 
 loadPage().catch((error) => {
-  listError.textContent = error.message;
+  listError.textContent = `${error.message} 管理者一覧を読み込めませんでした。画面を再読み込みしてください。`;
 });

@@ -16,5 +16,8 @@
     "file-type": "^22.3.0",
     "helmet": "^8.1.0",
     "multer": "^2.5.0"
+  },
+  "devDependencies": {
+    "linkedom": "^0.18.15"
   }
 }

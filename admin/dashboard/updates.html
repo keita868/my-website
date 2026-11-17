@@ -6,6 +6,7 @@
   <meta name="robots" content="noindex, nofollow">
   <title>更新情報管理 | 九州工業大学交響楽団</title>
   <link rel="stylesheet" href="/admin/assets/dashboard.css">
+  <script src="/admin/assets/ui.js" defer></script>
   <script src="/admin/assets/updates.js" defer></script>
 </head>
 <body class="dashboard-page">
@@ -39,7 +40,12 @@
         <h2 id="updates-title">投稿一覧</h2>
         <a class="secondary-button" href="/admin/updates/new">新規投稿</a>
       </div>
-      <p class="form-error" id="updates-message" role="status" aria-live="polite"></p>
+      <div class="update-filters">
+        <label>投稿を検索<input id="update-search" type="search" placeholder="タイトル・本文で検索" maxlength="200"></label>
+        <label>状態<select id="update-status"><option value="all">すべて</option><option value="draft">下書き</option><option value="scheduled">予約</option><option value="published">公開</option></select></label>
+      </div>
+      <p class="help-text" id="update-count" role="status"></p>
+      <p class="form-error" id="updates-message" data-success role="status" aria-live="polite"></p>
       <p class="form-error" id="updates-error" role="alert" aria-live="assertive"></p>
       <div class="update-list" id="update-list" aria-live="polite"></div>
     </section>

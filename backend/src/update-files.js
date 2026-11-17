@@ -1,13 +1,26 @@
-import { chmodSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, readdirSync, renameSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import multer from 'multer';
 import { fileTypeFromFile } from 'file-type';
-import { dataDirectory } from './database.js';
+import { dataDirectory, database } from './database.js';
 
 const maximumFileSize = 5 * 1024 * 1024;
 const uploadDirectory = path.join(dataDirectory, 'uploads');
 const temporaryDirectory = path.join(uploadDirectory, '.tmp');
+const generatedUuid = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const temporaryName = new RegExp(`^${generatedUuid}$`);
+const storedName = new RegExp(`^${generatedUuid}\\.(?:jpg|png|webp|gif|pdf)$`);
+let activeUploads = 0;
+
+export function beginAttachmentUpload() {
+  activeUploads++;
+  let finished = false;
+  return () => {
+    if (!finished) activeUploads--;
+    finished = true;
+  };
+}
 
 mkdirSync(temporaryDirectory, { recursive: true, mode: 0o700 });
 mkdirSync(uploadDirectory, { recursive: true, mode: 0o700 });
@@ -15,6 +28,7 @@ chmodSync(uploadDirectory, 0o700);
 chmodSync(temporaryDirectory, 0o700);
 
 export const attachmentUpload = multer({
+  defParamCharset: 'utf8',
   storage: multer.diskStorage({
     destination: temporaryDirectory,
     filename: (_req, _file, callback) => callback(null, randomUUID())
@@ -46,6 +60,44 @@ function removeFile(filePath) {
 
 export function cleanupTemporaryFiles(files = []) {
   for (const file of files) removeFile(file.path);
+}
+
+// The server owns this data directory exclusively. Avoid validation, moves and
+// commits in flight, including requests that have already lost their client.
+export function cleanupOrphanedAttachments() {
+  if (activeUploads) return;
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const referenced = new Set(database.prepare('SELECT stored_name FROM update_attachments').all().map((row) => row.stored_name));
+  for (const directory of [temporaryDirectory, uploadDirectory]) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const isTemporary = directory === temporaryDirectory;
+      if (!entry.isFile() || !(isTemporary ? temporaryName : storedName).test(entry.name)
+        || (!isTemporary && referenced.has(entry.name))) continue;
+      const filename = path.join(directory, entry.name);
+      let stat;
+      try {
+        stat = lstatSync(filename);
+      } catch (error) {
+        if (error.code === 'ENOENT') continue;
+        throw error;
+      }
+      if (stat.isFile() && stat.mtimeMs <= cutoff) removeFile(filename);
+    }
+  }
+}
+
+export function startAttachmentCleanup() {
+  const collect = () => {
+    try {
+      cleanupOrphanedAttachments();
+    } catch (error) {
+      process.stderr.write(`添付ファイルを回収できませんでした: ${error.stack || error}\n`);
+    }
+  };
+  collect();
+  const timer = setInterval(collect, 60 * 60 * 1000);
+  timer.unref();
+  return () => clearInterval(timer);
 }
 
 export async function persistAttachments(files, existingCount = 0) {

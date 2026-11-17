@@ -9,12 +9,16 @@ import session from 'express-session';
 import helmet from 'helmet';
 import { dataDirectory, database } from './database.js';
 import { sessionStore } from './session-store.js';
+import { authenticationExpiresAt, idleTimeoutMs } from './session-policy.js';
+import { acquireServerOwnership } from './server-ownership.js';
 import {
   attachmentPath,
   attachmentUpload,
+  beginAttachmentUpload,
   cleanupTemporaryFiles,
   deleteStoredAttachment,
-  persistAttachments
+  persistAttachments,
+  startAttachmentCleanup
 } from './update-files.js';
 
 const app = express();
@@ -25,6 +29,9 @@ const sessionSecret = process.env.CMS_SESSION_SECRET;
 if (!sessionSecret || sessionSecret.length < 32) {
   throw new Error('CMS_SESSION_SECRETには32文字以上のランダムな値を設定してください。');
 }
+
+acquireServerOwnership();
+startAttachmentCleanup();
 
 const dummyPasswordHash = await argon2.hash(randomBytes(32).toString('hex'), { type: argon2.argon2id });
 
@@ -70,7 +77,7 @@ app.use(session({
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'strict',
-    maxAge: 1000 * 60 * 60 * 8,
+    maxAge: idleTimeoutMs,
     path: '/'
   }
 }));
@@ -107,12 +114,17 @@ function requireCsrf(req, res, next) {
   next();
 }
 
+function sessionIsActive(req) {
+  return authenticationExpiresAt(req.session) > Date.now()
+    && sessionStore.isActive(req.sessionID);
+}
+
 function requireAdmin(req, res, next) {
   if (!req.session.adminId) {
     return res.status(401).json({ error: 'ログインが必要です。' });
   }
   const admin = adminById.get(req.session.adminId);
-  if (!admin || !admin.is_active || admin.session_version !== req.session.adminVersion) {
+  if (!admin || !admin.is_active || admin.session_version !== req.session.adminVersion || !sessionIsActive(req)) {
     return req.session.destroy((error) => {
       if (error) return next(error);
       res.clearCookie('cms.sid', {
@@ -132,7 +144,7 @@ function requireAdmin(req, res, next) {
 function requirePageAdmin(req, res, next) {
   if (!req.session.adminId) return res.redirect('/admin/login');
   const admin = adminById.get(req.session.adminId);
-  if (!admin || !admin.is_active || admin.session_version !== req.session.adminVersion) {
+  if (!admin || !admin.is_active || admin.session_version !== req.session.adminVersion || !sessionIsActive(req)) {
     return req.session.destroy((error) => {
       if (error) return next(error);
       res.clearCookie('cms.sid', {
@@ -191,7 +203,7 @@ function countActiveSuperadmins() {
 }
 
 const updateSelect = `
-  SELECT id, type, title, body, status, published_at AS publishedAt,
+  SELECT id, type, title, body, status, revision, published_at AS publishedAt,
     scheduled_at AS scheduledAt, created_by AS createdBy, updated_by AS updatedBy,
     created_at AS createdAt, updated_at AS updatedAt
   FROM updates
@@ -218,7 +230,7 @@ function getUpdate(updateId) {
 
 function getUpdates() {
   const rows = database.prepare(`
-    SELECT u.id, u.type, u.title, u.body, u.status,
+    SELECT u.id, u.type, u.title, u.body, u.status, u.revision,
       u.published_at AS publishedAt, u.scheduled_at AS scheduledAt,
       u.created_by AS createdBy, u.updated_by AS updatedBy,
       u.created_at AS createdAt, u.updated_at AS updatedAt,
@@ -239,6 +251,7 @@ function getUpdates() {
         title: row.title,
         body: row.body,
         status: row.status,
+        revision: row.revision,
         publishedAt: row.publishedAt,
         scheduledAt: row.scheduledAt,
         createdBy: row.createdBy,
@@ -281,8 +294,10 @@ function parseJstDateTime(value) {
 }
 
 function receiveAttachments(req, res, next) {
+  req.finishAttachmentUpload = beginAttachmentUpload();
   attachmentUpload.array('attachments', 5)(req, res, (error) => {
     if (error) {
+      req.finishAttachmentUpload();
       error.status = [
         'LIMIT_FILE_SIZE',
         'LIMIT_FILE_COUNT',
@@ -295,6 +310,16 @@ function receiveAttachments(req, res, next) {
   });
 }
 
+function finishAttachments(handler) {
+  return async (req, res, next) => {
+    try {
+      await handler(req, res, next);
+    } finally {
+      req.finishAttachmentUpload();
+    }
+  };
+}
+
 function removeSavedAttachments(attachments) {
   for (const attachment of attachments) deleteStoredAttachment(attachment.storedName);
 }
@@ -303,7 +328,7 @@ function processScheduledUpdates() {
   const now = new Date().toISOString();
   const publishDueUpdates = database.prepare(`
     UPDATE updates
-    SET status = 'published', published_at = ?, scheduled_at = NULL, updated_at = ?
+    SET status = 'published', published_at = ?, scheduled_at = NULL, updated_at = ?, revision = revision + 1
     WHERE status = 'draft' AND scheduled_at IS NOT NULL AND scheduled_at <= ?
   `);
   publishDueUpdates.run(now, now, now);
@@ -334,9 +359,18 @@ const loginAccountLimiter = rateLimit({
   message: { error: 'ログイン試行が多すぎます。しばらくしてから再度お試しください。' }
 });
 
+const passwordChangeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  keyGenerator: (req) => String(req.admin.id),
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: 'パスワード確認の試行が多すぎます。しばらくしてから再度お試しください。' }
+});
+
 app.get('/admin/login', (req, res) => {
   const admin = req.session.adminId && adminById.get(req.session.adminId);
-  if (admin && admin.is_active && admin.session_version === req.session.adminVersion) {
+  if (admin && admin.is_active && admin.session_version === req.session.adminVersion && sessionIsActive(req)) {
     return res.redirect('/admin');
   }
   res.set('Cache-Control', 'no-store');
@@ -401,6 +435,7 @@ app.post('/api/auth/login', loginLimiter, requireCsrf, loginAccountLimiter, asyn
       if (error) return next(error);
       req.session.adminId = admin.id;
       req.session.adminVersion = admin.session_version;
+      req.session.authenticatedAt = Date.now();
       issueCsrfToken(req);
       req.session.save((saveError) => {
         if (saveError) return next(saveError);
@@ -437,12 +472,17 @@ app.patch('/api/auth/me', requireAdmin, requireCsrf, (req, res) => {
   res.json({ admin: publicAdmin(req.admin) });
 });
 
-app.post('/api/auth/change-password', requireAdmin, requireCsrf, async (req, res, next) => {
+function validatePasswordChange(req, res, next) {
+  const { currentPassword, newPassword } = req.body ?? {};
+  if (typeof currentPassword !== 'string' || currentPassword.length === 0 || currentPassword.length > 1024 || !validPassword(newPassword)) {
+    return res.status(400).json({ error: '現在のパスワードと12文字以上の新しいパスワードを入力してください。' });
+  }
+  next();
+}
+
+app.post('/api/auth/change-password', requireAdmin, requireCsrf, validatePasswordChange, passwordChangeLimiter, async (req, res, next) => {
   try {
-    const { currentPassword, newPassword } = req.body ?? {};
-    if (typeof currentPassword !== 'string' || !validPassword(newPassword)) {
-      return res.status(400).json({ error: '現在のパスワードと12文字以上の新しいパスワードを入力してください。' });
-    }
+    const { currentPassword, newPassword } = req.body;
 
     const account = database.prepare('SELECT password_hash FROM admins WHERE id = ?').get(req.admin.id);
     if (!await argon2.verify(account.password_hash, currentPassword)) {
@@ -450,6 +490,9 @@ app.post('/api/auth/change-password', requireAdmin, requireCsrf, async (req, res
     }
 
     const passwordHash = await argon2.hash(newPassword, { type: argon2.argon2id });
+    if (!sessionIsActive(req)) {
+      return res.status(401).json({ error: 'ログインが必要です。' });
+    }
     const updatePassword = database.transaction(() => database.prepare(`
       UPDATE admins
       SET password_hash = ?, session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP
@@ -518,7 +561,7 @@ app.post('/api/admins', requireAdmin, requireSuperadmin, requireCsrf, async (req
       const createAdmin = database.transaction(() => {
         const actor = adminById.get(req.admin.id);
         if (!actor || !actor.is_active || actor.role !== 'superadmin'
-          || actor.session_version !== req.session.adminVersion) {
+          || actor.session_version !== req.session.adminVersion || !sessionIsActive(req)) {
           return { error: 'この操作を行う権限がありません。' };
         }
 
@@ -661,7 +704,19 @@ app.get('/api/admin/updates/:id', requireAdmin, (req, res) => {
   res.json({ update });
 });
 
-app.post('/api/admin/updates/:id/publish', requireAdmin, requireCsrf, (req, res) => {
+function requireUpdateRevision(req, res, next) {
+  const value = req.get('x-update-revision');
+  if (value === undefined) {
+    return res.status(428).json({ error: '投稿の版が必要です。画面を再読み込みしてください。' });
+  }
+  if (!/^(0|[1-9]\d*)$/.test(value) || !Number.isSafeInteger(Number(value))) {
+    return res.status(400).json({ error: '投稿の版が正しくありません。画面を再読み込みしてください。' });
+  }
+  req.updateRevision = Number(value);
+  next();
+}
+
+app.post('/api/admin/updates/:id/publish', requireAdmin, requireCsrf, requireUpdateRevision, (req, res) => {
   const updateId = Number(req.params.id);
   if (!Number.isSafeInteger(updateId) || updateId < 1) {
     return res.status(400).json({ error: '投稿IDが正しくありません。' });
@@ -670,17 +725,17 @@ app.post('/api/admin/updates/:id/publish', requireAdmin, requireCsrf, (req, res)
   const now = new Date().toISOString();
   const publish = database.prepare(`
     UPDATE updates
-    SET status = 'published', published_at = ?, scheduled_at = NULL, updated_at = ?, updated_by = ?
-    WHERE id = ? AND status = 'draft'
-  `).run(now, now, req.admin.id, updateId);
+    SET status = 'published', published_at = ?, scheduled_at = NULL, updated_at = ?, updated_by = ?, revision = revision + 1
+    WHERE id = ? AND status = 'draft' AND revision = ?
+  `).run(now, now, req.admin.id, updateId, req.updateRevision);
   if (publish.changes !== 1) {
     const existing = database.prepare('SELECT status FROM updates WHERE id = ?').get(updateId);
     if (!existing) return res.status(404).json({ error: '投稿が見つかりません。' });
-    return res.status(409).json({ error: 'この投稿は下書きではないため、公開できません。' });
+    return res.status(409).json({ error: '投稿の状態または版が変更されています。画面を再読み込みしてください。' });
   }
 
   const update = database.prepare(`
-    SELECT id, type, title, body, status, published_at AS publishedAt,
+    SELECT id, type, title, body, status, revision, published_at AS publishedAt,
       scheduled_at AS scheduledAt, created_by AS createdBy, updated_by AS updatedBy,
       created_at AS createdAt, updated_at AS updatedAt
     FROM updates WHERE id = ?
@@ -688,7 +743,7 @@ app.post('/api/admin/updates/:id/publish', requireAdmin, requireCsrf, (req, res)
   res.json({ success: true, update: updateWithAttachments(update) });
 });
 
-app.post('/api/admin/updates/:id/unpublish', requireAdmin, requireCsrf, (req, res) => {
+app.post('/api/admin/updates/:id/unpublish', requireAdmin, requireCsrf, requireUpdateRevision, (req, res) => {
   const updateId = Number(req.params.id);
   if (!Number.isSafeInteger(updateId) || updateId < 1) {
     return res.status(400).json({ error: '投稿IDが正しくありません。' });
@@ -696,27 +751,32 @@ app.post('/api/admin/updates/:id/unpublish', requireAdmin, requireCsrf, (req, re
   const now = new Date().toISOString();
   const result = database.prepare(`
     UPDATE updates
-    SET status = 'draft', published_at = NULL, scheduled_at = NULL, updated_at = ?, updated_by = ?
-    WHERE id = ? AND status = 'published'
-  `).run(now, req.admin.id, updateId);
+    SET status = 'draft', published_at = NULL, scheduled_at = NULL, updated_at = ?, updated_by = ?, revision = revision + 1
+    WHERE id = ? AND status = 'published' AND revision = ?
+  `).run(now, req.admin.id, updateId, req.updateRevision);
   if (result.changes !== 1) {
     const existing = database.prepare('SELECT id FROM updates WHERE id = ?').get(updateId);
     if (!existing) return res.status(404).json({ error: '投稿が見つかりません。' });
-    return res.status(409).json({ error: '公開中の投稿ではありません。' });
+    return res.status(409).json({ error: '投稿の状態または版が変更されています。画面を再読み込みしてください。' });
   }
   res.json({ success: true, update: getUpdate(updateId) });
 });
 
-app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachments, async (req, res, next) => {
+app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, requireUpdateRevision, receiveAttachments, finishAttachments(async (req, res, next) => {
   const updateId = Number(req.params.id);
   if (!Number.isSafeInteger(updateId) || updateId < 1) {
     cleanupTemporaryFiles(req.files);
     return res.status(400).json({ error: '投稿IDが正しくありません。' });
   }
-  const existing = database.prepare('SELECT status, updated_at AS updatedAt FROM updates WHERE id = ?').get(updateId);
+  const expectedRevision = req.updateRevision;
+  const existing = database.prepare('SELECT status, revision FROM updates WHERE id = ?').get(updateId);
   if (!existing) {
     cleanupTemporaryFiles(req.files);
     return res.status(404).json({ error: '投稿が見つかりません。' });
+  }
+  if (expectedRevision !== existing.revision) {
+    cleanupTemporaryFiles(req.files);
+    return res.status(409).json({ error: '投稿が別の操作で変更されています。入力内容を控えてから画面を再読み込みしてください。' });
   }
   const { type, title, body, scheduledAt: scheduledAtInput = '' } = req.body ?? {};
   if (!['news', 'notice'].includes(type)
@@ -752,14 +812,14 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachment
     const now = new Date().toISOString();
     const saveUpdate = database.transaction(() => {
       const actor = adminById.get(req.admin.id);
-      if (!actor || !actor.is_active || actor.session_version !== req.session.adminVersion) {
+      if (!actor || !actor.is_active || actor.session_version !== req.session.adminVersion || !sessionIsActive(req)) {
         return { error: 'unauthorized' };
       }
       const currentUpdate = database.prepare(`
-        SELECT status, updated_at AS updatedAt FROM updates WHERE id = ?
+        SELECT status, revision FROM updates WHERE id = ?
       `).get(updateId);
       if (!currentUpdate || currentUpdate.status !== existing.status
-        || currentUpdate.updatedAt !== existing.updatedAt
+        || currentUpdate.revision !== existing.revision
         || (scheduledAt && currentUpdate.status !== 'draft')) {
         return { error: 'conflict' };
       }
@@ -773,8 +833,8 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachment
       }
       const updateResult = database.prepare(`
         UPDATE updates
-        SET type = ?, title = ?, body = ?, scheduled_at = ?, updated_at = ?, updated_by = ?
-        WHERE id = ? AND status = ? AND updated_at = ?
+        SET type = ?, title = ?, body = ?, scheduled_at = ?, updated_at = ?, updated_by = ?, revision = revision + 1
+        WHERE id = ? AND status = ? AND revision = ?
       `).run(
         type,
         title.trim(),
@@ -784,7 +844,7 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachment
         actor.id,
         updateId,
         currentUpdate.status,
-        currentUpdate.updatedAt
+        currentUpdate.revision
       );
       if (updateResult.changes !== 1) return { error: 'conflict' };
       const insertAttachment = database.prepare(`
@@ -817,7 +877,7 @@ app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachment
     if (savedAttachments.length > 0) removeSavedAttachments(savedAttachments);
     next(error);
   }
-});
+}));
 
 app.delete('/api/admin/updates/:id/attachments/:attachmentId', requireAdmin, requireCsrf, (req, res) => {
   const updateId = Number(req.params.id);
@@ -850,7 +910,7 @@ app.delete('/api/admin/updates/:id', requireAdmin, requireCsrf, (req, res) => {
   res.status(204).end();
 });
 
-app.post('/api/admin/updates', requireAdmin, requireCsrf, receiveAttachments, async (req, res, next) => {
+app.post('/api/admin/updates', requireAdmin, requireCsrf, receiveAttachments, finishAttachments(async (req, res, next) => {
   const { type, title, body, status, scheduledAt: scheduledAtInput = '' } = req.body ?? {};
   if (!['news', 'notice'].includes(type)
     || !['draft', 'published', 'scheduled'].includes(status)
@@ -885,7 +945,7 @@ app.post('/api/admin/updates', requireAdmin, requireCsrf, receiveAttachments, as
     const publishedAt = status === 'published' ? now : null;
     const createUpdate = database.transaction(() => {
       const actor = adminById.get(req.admin.id);
-      if (!actor || !actor.is_active || actor.session_version !== req.session.adminVersion) {
+      if (!actor || !actor.is_active || actor.session_version !== req.session.adminVersion || !sessionIsActive(req)) {
         return { error: 'unauthorized' };
       }
       const result = database.prepare(`
@@ -932,7 +992,7 @@ app.post('/api/admin/updates', requireAdmin, requireCsrf, receiveAttachments, as
     if (savedAttachments.length > 0) removeSavedAttachments(savedAttachments);
     next(error);
   }
-});
+}));
 
 app.post('/api/auth/logout', requireCsrf, (req, res, next) => {
   req.session.destroy((error) => {
@@ -952,7 +1012,10 @@ app.use('/api', (_req, res) => {
 });
 
 app.use((error, _req, res, _next) => {
-  process.stderr.write(`${error.stack || error}\n`);
+  // JSON parser messages can include submitted passwords or other request data.
+  process.stderr.write(error.type === 'entity.parse.failed'
+    ? 'JSONリクエストを解析できませんでした。\n'
+    : `${error.stack || error}\n`);
   if (res.headersSent) return;
   const status = error.status === 400 ? 400 : error.status === 413 ? 413 : 500;
   res.status(status).json({
