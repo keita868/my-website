@@ -4,15 +4,29 @@ import { parseHTML } from 'linkedom';
 
 const clearedSelects = new WeakMap();
 
+function clearSelectTracking(select) {
+  clearedSelects.get(select)?.observer.disconnect();
+  clearedSelects.delete(select);
+}
+
+function trackClearedSelect(select, MutationObserver) {
+  clearSelectTracking(select);
+  const processChanges = (records) => {
+    if (records.some((record) => [...record.addedNodes, ...record.removedNodes].some((node) => (
+      node.matches?.('option, optgroup') || node.querySelector?.('option')
+    )))) clearSelectTracking(select);
+  };
+  const observer = new MutationObserver(processChanges);
+  observer.observe(select, { childList: true, subtree: true });
+  clearedSelects.set(select, { observer, processChanges });
+}
+
 function selectedOptions(select) {
+  const cleared = clearedSelects.get(select);
+  if (cleared) cleared.processChanges(cleared.observer.takeRecords());
   const selected = [...select.querySelectorAll('option[selected]')];
   const multiple = select.hasAttribute('multiple');
   if (selected.length) return multiple ? selected : [selected.at(-1)];
-  const options = [...select.querySelectorAll('option')];
-  const clearedOptions = clearedSelects.get(select);
-  if (clearedOptions && (options.length !== clearedOptions.length || options.some((option, index) => option !== clearedOptions[index]))) {
-    clearedSelects.delete(select);
-  }
   if (multiple || clearedSelects.has(select) || Number(select.getAttribute('size') || 1) > 1) return [];
   const fallback = [...select.querySelectorAll('option')].find((option) => (
     !option.hasAttribute('disabled') && !option.closest('optgroup[disabled]')
@@ -45,8 +59,8 @@ export function page(name, request) {
       const options = [...this.querySelectorAll('option')];
       const firstMatch = options.find((option) => option.value === stringValue);
       for (const option of options) option.toggleAttribute('selected', option === firstMatch);
-      if (firstMatch) clearedSelects.delete(this);
-      else clearedSelects.set(this, options);
+      if (firstMatch) clearSelectTracking(this);
+      else trackClearedSelect(this, window.MutationObserver);
     }
   });
   for (const input of document.querySelectorAll('input[type="file"]')) {

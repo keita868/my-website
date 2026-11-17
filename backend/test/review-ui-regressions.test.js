@@ -218,8 +218,10 @@ for (const editing of [false, true]) for (const movedFocus of [false, true]) {
     await flush();
     fixture.event(listRetry, 'click');
     fixture.event(form, 'submit');
+    assert.equal(form.inert, true);
     active = movedFocus ? listRetry : fixture.document.body;
     await flush();
+    assert.equal(form.inert, true);
     save.reject(new Error('save failed'));
     await flush();
     assert.equal(form.inert, false);
@@ -228,9 +230,58 @@ for (const editing of [false, true]) for (const movedFocus of [false, true]) {
     assert.equal(message.textContent, 'save failed');
     retry.resolve({ admins: [] });
     await flush();
-    assert.equal(message.textContent, 'save failed');
+    const currentMessage = fixture.document.querySelector(editing ? '.admin-save-message' : '#create-error');
+    assert.ok(currentMessage);
+    assert.equal(currentMessage.textContent, 'save failed');
   });
 }
+
+test('admin save status remains connected outside the locked form across success and failure', async () => {
+  const fixture = page('admins');
+  const saves = [deferred(), deferred()];
+  let writes = 0;
+  const admin = { id: 2, displayName: 'Before', email: 'a@example.test', role: 'admin', isActive: true };
+  fixture.window.cmsUI = { request: async (url, options = {}) => {
+    if (url === '/api/auth/me') return { admin: { role: 'superadmin' } };
+    if (url === '/api/auth/csrf') return { csrfToken: 'token' };
+    if (url === '/api/admins' && !options.method) return { admins: [admin] };
+    assert.equal(url, '/api/admins/2');
+    return saves[writes++].promise;
+  } };
+  fixture.run('admins');
+  await flush();
+  const row = fixture.document.querySelector('.admin-row');
+  const message = row.querySelector('[role="status"]');
+  const form = row.querySelector('form');
+  fixture.event(form, 'submit');
+  await flush();
+  assert.equal(form.inert, true);
+  assert.equal(form.getAttribute('aria-busy'), 'true');
+  assert.equal(message.closest('form'), null);
+  assert.equal(message.isConnected, true);
+  saves[0].resolve({ admin: { ...admin, displayName: 'Normalized' } });
+  await flush();
+  const updatedForm = row.querySelector('form');
+  assert.notEqual(updatedForm, form);
+  assert.equal(updatedForm.querySelector('[name="displayName"]').value, 'Normalized');
+  assert.equal(row.querySelector('[role="status"]'), message);
+  assert.equal(message.isConnected, true);
+  assert.equal(message.textContent, '変更を保存しました。');
+  assert.equal(message.hasAttribute('data-success'), true);
+
+  fixture.event(updatedForm, 'submit');
+  await flush();
+  assert.equal(updatedForm.inert, true);
+  assert.equal(message.textContent, '');
+  saves[1].reject(new Error('save failed'));
+  await flush();
+  assert.equal(updatedForm.inert, false);
+  assert.equal(updatedForm.hasAttribute('aria-busy'), false);
+  assert.equal(row.querySelector('[role="status"]'), message);
+  assert.equal(message.isConnected, true);
+  assert.equal(message.textContent, 'save failed');
+  assert.equal(message.hasAttribute('data-success'), false);
+});
 
 test('publication actions send the revision displayed in the list', async () => {
   for (const status of ['draft', 'published']) {
@@ -250,6 +301,7 @@ test('publication actions send the revision displayed in the list', async () => 
     fixture.event(fixture.document.querySelector(`button[data-${action}-id]`), 'click');
     await flush();
     assert.equal(written.url, `/api/admin/updates/1/${action}`);
+    assert.equal(written.method, 'POST');
     assert.equal(written.headers['X-Update-Revision'], '7');
   }
 });

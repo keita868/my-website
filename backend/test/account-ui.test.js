@@ -21,6 +21,8 @@ test('profile fields stay locked until loading succeeds, and failed loading can 
   assert.equal(fixture.document.querySelector('#password-form').inert, true);
   initial.reject(new Error('offline'));
   await flush();
+  assert.equal(form.inert, true);
+  assert.equal(fixture.document.querySelector('#password-form').inert, true);
   assert.equal(retry.hidden, false);
   fixture.event(retry, 'click');
   assert.equal(form.inert, true);

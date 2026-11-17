@@ -36,7 +36,7 @@ function cookieFrom(response, fallback = '') {
   return response.headers.get('set-cookie')?.split(';', 1)[0] || fallback;
 }
 
-async function request(pathname, { method = 'GET', cookie = '', csrf, body, forwardedFor, expectedRevision } = {}) {
+async function request(pathname, { method = 'GET', cookie = '', csrf, body, forwardedFor, expectedRevision, signal } = {}) {
   const headers = {};
   if (cookie) headers.Cookie = cookie;
   if (csrf) headers['X-CSRF-Token'] = csrf;
@@ -45,7 +45,7 @@ async function request(pathname, { method = 'GET', cookie = '', csrf, body, forw
   // Race/precondition scenarios pass the original version explicitly; null omits it.
   const target = /^\/api\/admin\/updates\/([^/]+)(?:\/(?:publish|unpublish))?$/.exec(pathname);
   if (expectedRevision === undefined && target && ['PATCH', 'POST'].includes(method) && cookie) {
-    const current = await request(`/api/admin/updates/${target[1]}`, { cookie });
+    const current = await request(`/api/admin/updates/${target[1]}`, { cookie, signal });
     expectedRevision = current.data?.update?.revision ?? 0;
   }
   if (expectedRevision != null) headers['X-Update-Revision'] = String(expectedRevision);
@@ -54,6 +54,7 @@ async function request(pathname, { method = 'GET', cookie = '', csrf, body, forw
   const response = await fetch(`${origin}${pathname}`, {
     method,
     headers,
+    signal,
     body: body === undefined ? undefined : isFormData ? body : JSON.stringify(body),
     redirect: 'manual'
   });
@@ -885,26 +886,35 @@ test('a save interleaved after revision validation rejects the upload and remove
   const id = created.data.update.id;
   const pathname = `/api/admin/updates/${id}`;
   const beforeFiles = readdirSync(pathJoinUploads()).sort();
-  const armed = once(server, 'message', { signal: AbortSignal.timeout(5000) });
-  server.send('arm-upload-barrier');
-  assert.equal((await armed)[0], 'upload-barrier-armed');
   const form = new FormData();
   form.set('type', 'news');
   form.set('title', 'Losing save');
   form.set('body', 'Must not overwrite');
   form.append('attachments', new Blob(['%PDF-1.4\n'], { type: 'application/pdf' }), 'race.pdf');
-  const paused = once(server, 'message', { signal: AbortSignal.timeout(5000) });
-  const losing = request(pathname, { method: 'PATCH', ...csrf, expectedRevision: 0, body: form });
+  let losing;
+  let losingOutcome;
   try {
+    const armed = once(server, 'message', { signal: AbortSignal.timeout(5000) });
+    server.send('arm-upload-barrier');
+    assert.equal((await armed)[0], 'upload-barrier-armed');
+    const paused = once(server, 'message', { signal: AbortSignal.timeout(5000) });
+    // Attach both handlers immediately so an early timeout cannot become an
+    // unhandled rejection while the competing request is still pending.
+    losing = request(pathname, {
+      method: 'PATCH', ...csrf, expectedRevision: 0, body: form, signal: AbortSignal.timeout(10000)
+    }).then((result) => ({ result }), (error) => ({ error }));
     assert.equal((await paused)[0], 'upload-barrier-paused');
     const winner = await request(pathname, {
-      method: 'PATCH', ...csrf, expectedRevision: 0, body: { type: 'news', title: 'Winning save', body: 'New body' }
+      method: 'PATCH', ...csrf, expectedRevision: 0, body: { type: 'news', title: 'Winning save', body: 'New body' },
+      signal: AbortSignal.timeout(5000)
     });
     assert.equal(winner.response.status, 200);
   } finally {
     server.send('release-upload-barrier');
+    losingOutcome = await losing;
   }
-  assert.equal((await losing).response.status, 409);
+  if (losingOutcome.error) throw losingOutcome.error;
+  assert.equal(losingOutcome.result.response.status, 409);
   const current = await request(pathname, { cookie: authenticated.cookie });
   assert.equal(current.data.update.title, 'Winning save');
   assert.equal(current.data.update.body, 'New body');

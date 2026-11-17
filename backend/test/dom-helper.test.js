@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { page } from '../test-support/dom.js';
+import { page, flush } from '../test-support/dom.js';
 
 test('form fixture uses explicit selection, checked radios, multiple selections and File values', () => {
   const fixture = page('account');
@@ -107,4 +107,24 @@ test('select assignment converts an object to a string exactly once', () => {
   select.value = { toString() { return ++calls === 1 ? 'missing' : 'b'; } };
   assert.equal(calls, 1);
   assert.equal(select.value, '');
+});
+
+test('adding and removing an option restores selection even before mutation callbacks run', async () => {
+  const fixture = page('account');
+  for (const readFormDataFirst of [false, true]) for (const waitForCallback of [false, true]) {
+    const form = fixture.document.createElement('form');
+    form.innerHTML = '<select name="choice"><option value="a">A</option><option value="b">B</option></select>';
+    fixture.document.body.append(form);
+    const select = form.querySelector('select');
+    select.value = 'missing';
+    assert.equal(select.value, '');
+    const extra = fixture.document.createElement('option');
+    extra.value = 'c';
+    select.append(extra);
+    extra.remove();
+    if (waitForCallback) await flush();
+    if (readFormDataFirst) assert.equal(new fixture.FormData(form).get('choice'), 'a');
+    assert.equal(select.value, 'a');
+    assert.equal(new fixture.FormData(form).get('choice'), 'a');
+  }
 });

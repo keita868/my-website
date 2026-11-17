@@ -41,7 +41,7 @@ test('login submission is intercepted immediately, including while CSRF is pendi
   csrf.resolve({ ok: true, json: async () => ({ csrfToken: 'token' }) });
   await flush();
   assert.equal(writes, 1);
-  assert.equal(written.headers['X-CSRF-Token'], 'token');
+  assert.equal(new Headers(written.headers).get('X-CSRF-Token'), 'token');
   assert.equal(form.querySelector('button[type="submit"]').disabled, false);
   assert.deepEqual(fixture.navigations, []);
 });

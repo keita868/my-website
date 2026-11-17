@@ -1,9 +1,9 @@
-import { chmodSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, readdirSync, renameSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import multer from 'multer';
 import { fileTypeFromFile } from 'file-type';
-import { dataDirectory } from './database.js';
+import { dataDirectory, database } from './database.js';
 
 const maximumFileSize = 5 * 1024 * 1024;
 const uploadDirectory = path.join(dataDirectory, 'uploads');
@@ -47,6 +47,20 @@ function removeFile(filePath) {
 
 export function cleanupTemporaryFiles(files = []) {
   for (const file of files) removeFile(file.path);
+}
+
+// Run before accepting requests, while no other server uses this data directory.
+export function cleanupOrphanedAttachments() {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const referenced = new Set(database.prepare('SELECT stored_name FROM update_attachments').all().map((row) => row.stored_name));
+  for (const directory of [temporaryDirectory, uploadDirectory]) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || (directory === uploadDirectory && referenced.has(entry.name))) continue;
+      const filename = path.join(directory, entry.name);
+      const stat = lstatSync(filename);
+      if (stat.isFile() && stat.mtimeMs <= cutoff) removeFile(filename);
+    }
+  }
 }
 
 export async function persistAttachments(files, existingCount = 0) {

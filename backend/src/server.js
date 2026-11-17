@@ -13,6 +13,7 @@ import { authenticationExpiresAt, idleTimeoutMs } from './session-policy.js';
 import {
   attachmentPath,
   attachmentUpload,
+  cleanupOrphanedAttachments,
   cleanupTemporaryFiles,
   deleteStoredAttachment,
   persistAttachments
@@ -26,6 +27,8 @@ const sessionSecret = process.env.CMS_SESSION_SECRET;
 if (!sessionSecret || sessionSecret.length < 32) {
   throw new Error('CMS_SESSION_SECRETには32文字以上のランダムな値を設定してください。');
 }
+
+cleanupOrphanedAttachments();
 
 const dummyPasswordHash = await argon2.hash(randomBytes(32).toString('hex'), { type: argon2.argon2id });
 

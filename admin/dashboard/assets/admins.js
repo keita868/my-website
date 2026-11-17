@@ -78,8 +78,8 @@ function renderAdmin(admin) {
   const message = document.createElement('p');
   message.className = 'form-error admin-save-message';
   message.setAttribute('role', 'status');
-  form.append(fields, actions, message);
-  item.append(form);
+  form.append(fields, actions);
+  item.append(form, message);
   return item;
 }
 
@@ -178,8 +178,10 @@ adminList.addEventListener('submit', async (event) => {
   form.setAttribute('aria-busy', 'true');
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
-  const message = form.querySelector('.admin-save-message');
+  const row = form.closest('.admin-row');
+  const message = row.querySelector('.admin-save-message');
   message.textContent = '';
+  delete message.dataset.success;
   try {
     const fields = new FormData(form);
     const { admin } = await request(`/api/admins/${form.dataset.id}`, {
@@ -193,10 +195,9 @@ adminList.addEventListener('submit', async (event) => {
       })
     });
     failed = false;
-    const updated = renderAdmin(admin);
-    updated.querySelector('.admin-save-message').textContent = '変更を保存しました。';
-    updated.querySelector('.admin-save-message').dataset.success = '';
-    form.closest('.admin-row').replaceWith(updated);
+    form.replaceWith(renderAdmin(admin).querySelector('form'));
+    message.dataset.success = '';
+    message.textContent = '変更を保存しました。';
   } catch (error) {
     message.textContent = error.message;
   } finally {

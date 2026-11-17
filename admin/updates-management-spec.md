@@ -146,7 +146,7 @@
 - DB側にもCHECK制約やNOT NULL制約を設定し、アプリ側の検証だけに依存しない。
 - 添付ファイルのメタデータは`update_attachments`に保存し、実ファイルは非公開のアップロードディレクトリに保存する。
 
-SQLiteを使っている場合のDDL例（実際のDB・既存テーブル名に合わせて調整すること）：
+SQLiteの`004_update_revisions.sql`適用前のDDL例：
 
 ```sql
 CREATE TABLE updates (
@@ -157,7 +157,6 @@ CREATE TABLE updates (
   status TEXT NOT NULL CHECK (status IN ('draft', 'published')),
   published_at TEXT,
   scheduled_at TEXT,
-  revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
   created_by INTEGER NOT NULL,
   updated_by INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -169,7 +168,7 @@ CREATE TABLE updates (
 );
 ```
 
-このSQLはSQLite用の例。既存の`admins`テーブル名・主キー名、DBの種類、マイグレーション方式を確認してから適用する。既存テーブルを削除・再作成しない。
+このSQLは構造を説明する参考例であり、初期化には直接使用しない。実際の新規DBは`backend/src/database.js`から未適用の`backend/migrations/*.sql`を番号順に適用して作成する。既存テーブルを削除・再作成しない。
 予約中の投稿は`status = 'draft'`のまま`scheduled_at`を設定し、サーバー側の定期処理で公開する。
 
 既存DBには`backend/migrations/004_update_revisions.sql`で`revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0)`を追加する。新規DBにも同じマイグレーションを適用する。APIは起動時に未適用マイグレーションをトランザクション内で適用してから受付を開始する。
@@ -251,7 +250,11 @@ CREATE TABLE updates (
 
 投稿取得・一覧のレスポンスには整数の`revision`を含める。編集PATCH・手動公開・公開取り下げは、画面に読み込んだ時点の値を`X-Update-Revision`ヘッダーに10進整数で送信する。サーバーの現在の版と異なる場合は`409`を返し、本文と追加添付を保存しない。形式が不正な場合は`400`を返す。ヘッダー省略は`428 Precondition Required`で拒否する。旧クライアントも読み込み時の版を送る必要がある。
 
-保存時の照合と更新は`WHERE id = ? AND revision = ?`を含む同一UPDATEで行い、本文・版の加算・添付レコードの登録を同じトランザクションで確定する。予約自動公開も状態変更と版の加算を同一UPDATEで行う。追加添付は検証中に仮置きし、確定前の認証・状態・版の再確認に失敗した場合は仮置きファイルと移動済みファイルを削除し、添付レコードを残さない。
+保存時の照合と更新は`WHERE id = ? AND revision = ?`を含む同一UPDATEで行い、本文・版の加算・添付レコードの登録を同じトランザクションで確定する。
+
+予約自動公開は、`WHERE status = 'draft' AND scheduled_at IS NOT NULL AND scheduled_at <= ?`をUPDATE自体に指定し、実行時刻を照合して状態変更・予約解除・版の加算を同時に行う。候補IDの取得結果だけで公開してはならない。候補取得と更新を分離する場合は取得時の版も照合し、その後に編集された投稿は次回の処理で評価する。
+
+追加添付は検証中に仮置きする。確定前の認証・状態・版の再確認失敗、条件付きUPDATEの更新件数0件、ファイル移動・添付レコード登録・DBコミットの失敗を含むすべての失敗経路で、仮置きファイルと移動済みファイルを削除し、DBの変更をロールバックする。プロセス停止で後始末できなかったファイルは、API受付前の起動処理で回収する。`uploads/.tmp`内の通常ファイルと、`uploads`直下で`update_attachments.stored_name`から参照されない通常ファイルのうち、最終更新から24時間以上経過したものを削除する。参照中のファイル、24時間未満のファイル、ディレクトリとシンボリックリンクは削除しない。同じデータディレクトリを使う別サーバーがアップロード処理中の場合は回収を実行しない運用とする。
 
 `revision`は本文編集・公開・公開取り下げ・予約自動公開で増加する。添付ファイル単独の削除では増加しない。編集中に添付を削除しても、本文の入力内容と読み込み時の版番号を保持する。版の競合時は入力を残し、内容を控えてから最新の投稿を読み直すよう案内する。
 
