@@ -37,7 +37,7 @@
     </section>
     <section class="panel account-panel" aria-labelledby="profile-title">
       <h2 id="profile-title">プロフィール</h2>
-      <form id="profile-form" class="account-form" method="post" action="/api/auth/me">
+      <form inert id="profile-form" class="account-form" method="post" action="/api/auth/me">
         <label>表示名<input name="displayName" required maxlength="80"></label>
         <label>メールアドレス<input name="email" type="email" required maxlength="254"></label>
         <button class="primary-button" type="submit">プロフィールを保存</button>
@@ -47,7 +47,7 @@
     </section>
     <section class="panel account-panel" aria-labelledby="password-title">
       <h2 id="password-title">パスワード変更</h2>
-      <form id="password-form" class="account-form" method="post" action="/api/auth/change-password">
+      <form inert id="password-form" class="account-form" method="post" action="/api/auth/change-password">
         <label>現在のパスワード<input name="currentPassword" type="password" required autocomplete="current-password"></label>
         <label>新しいパスワード（12文字以上）<input name="newPassword" type="password" required minlength="12" autocomplete="new-password"></label>
         <button class="primary-button" type="submit">パスワードを変更</button>

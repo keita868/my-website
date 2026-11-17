@@ -133,6 +133,10 @@ for (const deleteFirst of [false, true]) {
     let updateReads = 0;
     let deleted = false;
     let written;
+    fixture.context.fetch = async () => ({ ok: false, status: 409, headers: { get: () => null }, json: async () => ({ error: '投稿状態が変更されました。画面を再読み込みしてください。' }) });
+    for (const input of fixture.document.querySelectorAll('[maxlength]')) input.maxLength = Number(input.getAttribute('maxlength'));
+    fixture.run('ui');
+    const realRequest = fixture.window.cmsUI.request;
     const base = { id: 1, type: 'news', title: 'Original title', body: 'Original body', status: 'draft', scheduledAt: null, revision: 3 };
     const attachment = { id: 9, originalName: 'image.png', mimeType: 'image/png', size: 3, url: '/api/admin/updates/attachments/9/file' };
     fixture.window.cmsUI = { request: async (url, options = {}) => {
@@ -148,7 +152,7 @@ for (const deleteFirst of [false, true]) {
       assert.equal(url, '/api/admin/updates/1');
       assert.equal(options.method, 'PATCH');
       written = options;
-      throw new Error('投稿状態が変更されました。画面を再読み込みしてください。');
+      return realRequest(url, options);
     } };
     fixture.run('update-create');
     await flush();
@@ -174,6 +178,7 @@ for (const deleteFirst of [false, true]) {
     assert.equal(written.headers['X-Update-Revision'], '3');
     assert.equal(written.body.get('title'), 'Local title');
     assert.equal(written.body.get('body'), 'Local body');
+    assert.equal(written.body.get('scheduledAt'), '2099-01-02T12:34');
     assert.equal(form.inert, false);
     assert.equal(form.elements.title.value, 'Local title');
     assert.equal(form.elements.body.value, 'Local body');
@@ -182,3 +187,69 @@ for (const deleteFirst of [false, true]) {
     assert.match(fixture.document.querySelector('#update-error').textContent, /入力内容は保持/);
   });
 }
+
+for (const editing of [false, true]) for (const movedFocus of [false, true]) {
+  test(`failed admin ${editing ? 'edit' : 'creation'} restores focus only if it was not moved (${movedFocus})`, async () => {
+    const fixture = page('admins');
+    const save = deferred();
+    const retry = deferred();
+    let listCalls = 0;
+    fixture.window.cmsUI = { request: async (url, options = {}) => {
+      if (url === '/api/auth/me') return { admin: { role: 'superadmin' } };
+      if (url === '/api/auth/csrf') return { csrfToken: 'token' };
+      if (!options.method) {
+        if (++listCalls === 1) return { admins: [{ id: 2, displayName: 'Name', email: 'a@example.test', role: 'admin', isActive: true }] };
+        if (listCalls === 2) throw new Error('list offline');
+        return retry.promise;
+      }
+      return save.promise;
+    } };
+    fixture.run('admins');
+    await flush();
+    const form = fixture.document.querySelector(editing ? '.admin-edit-form' : '#create-form');
+    const input = form.querySelector('input[name="email"]');
+    // Linkedom does not implement browser focus/inert behavior; simulate the
+    // browser moving focus to the body when the focused form becomes inert.
+    let active = input;
+    Object.defineProperty(fixture.document, 'activeElement', { get: () => active });
+    input.focus = () => { active = input; };
+    const listRetry = fixture.document.querySelector('#admin-list-retry');
+    fixture.event(listRetry, 'click');
+    await flush();
+    fixture.event(listRetry, 'click');
+    fixture.event(form, 'submit');
+    active = movedFocus ? listRetry : fixture.document.body;
+    await flush();
+    save.reject(new Error('save failed'));
+    await flush();
+    assert.equal(form.inert, false);
+    assert.equal(active, movedFocus ? listRetry : input);
+    const message = fixture.document.querySelector(editing ? '.admin-save-message' : '#create-error');
+    assert.equal(message.textContent, 'save failed');
+    retry.resolve({ admins: [] });
+    await flush();
+    assert.equal(message.textContent, 'save failed');
+  });
+}
+
+test('publication actions send the revision displayed in the list', async () => {
+  for (const status of ['draft', 'published']) {
+    const fixture = page('updates');
+    fixture.window.confirm = () => true;
+    let written;
+    fixture.window.cmsUI = { request: async (url, options = {}) => {
+      if (url === '/api/auth/me') return { admin: { role: 'superadmin' } };
+      if (url === '/api/auth/csrf') return { csrfToken: 'token' };
+      if (url === '/api/admin/updates') return { updates: [{ id: 1, type: 'news', title: 'Title', body: 'Body', status, revision: 7, attachments: [] }] };
+      written = { url, ...options };
+      throw new Error('conflict');
+    } };
+    fixture.run('updates');
+    await flush();
+    const action = status === 'draft' ? 'publish' : 'unpublish';
+    fixture.event(fixture.document.querySelector(`button[data-${action}-id]`), 'click');
+    await flush();
+    assert.equal(written.url, `/api/admin/updates/1/${action}`);
+    assert.equal(written.headers['X-Update-Revision'], '7');
+  }
+});

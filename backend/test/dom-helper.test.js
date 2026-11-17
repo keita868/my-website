@@ -48,11 +48,12 @@ test('clearing a select omits it from FormData until an option is selected', () 
 
 test('assigning a duplicate value selects only the first option in single and multiple selects', () => {
   const fixture = page('account');
-  for (const multiple of [false, true]) {
+  for (const multiple of [false, true]) for (const initial of [1, 2]) {
     const form = fixture.document.createElement('form');
     form.innerHTML = `<select name="choice" ${multiple ? 'multiple' : ''}><option value="a">First</option><option value="a">Second</option><option value="b" selected>B</option></select>`;
     fixture.document.body.append(form);
     const select = form.querySelector('select');
+    [...select.querySelectorAll('option')].forEach((option, index) => option.toggleAttribute('selected', index === initial));
     select.value = 'a';
     assert.equal(select.querySelectorAll('option[selected]').length, 1);
     assert.equal(select.querySelector('option[selected]'), select.querySelector('option'));
@@ -84,4 +85,26 @@ test('checked checkbox and radio defaults use on while explicit empty values and
     assert.equal(data.has('unchecked'), false);
     assert.equal(data.has('changed'), false);
   }
+});
+
+test('replacing options after clearing a select restores default selection and submission', () => {
+  const fixture = page('account');
+  const form = fixture.document.createElement('form');
+  form.innerHTML = '<select name="choice"><option value="old">Old</option></select>';
+  const select = form.querySelector('select');
+  select.value = 'missing';
+  assert.equal(new fixture.FormData(form).has('choice'), false);
+  select.innerHTML = '<option value="new">New</option>';
+  assert.equal(select.value, 'new');
+  assert.equal(new fixture.FormData(form).get('choice'), 'new');
+});
+
+test('select assignment converts an object to a string exactly once', () => {
+  const fixture = page('account');
+  const select = fixture.document.createElement('select');
+  select.innerHTML = '<option value="a">A</option><option value="b">B</option>';
+  let calls = 0;
+  select.value = { toString() { return ++calls === 1 ? 'missing' : 'b'; } };
+  assert.equal(calls, 1);
+  assert.equal(select.value, '');
 });

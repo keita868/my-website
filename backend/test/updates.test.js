@@ -41,7 +41,14 @@ async function request(pathname, { method = 'GET', cookie = '', csrf, body, forw
   if (cookie) headers.Cookie = cookie;
   if (csrf) headers['X-CSRF-Token'] = csrf;
   if (forwardedFor) headers['X-Forwarded-For'] = forwardedFor;
-  if (expectedRevision !== undefined) headers['X-Update-Revision'] = String(expectedRevision);
+  // Existing API scenarios use the version read immediately before the operation.
+  // Race/precondition scenarios pass the original version explicitly; null omits it.
+  const target = /^\/api\/admin\/updates\/([^/]+)(?:\/(?:publish|unpublish))?$/.exec(pathname);
+  if (expectedRevision === undefined && target && ['PATCH', 'POST'].includes(method) && cookie) {
+    const current = await request(`/api/admin/updates/${target[1]}`, { cookie });
+    expectedRevision = current.data?.update?.revision ?? 0;
+  }
+  if (expectedRevision != null) headers['X-Update-Revision'] = String(expectedRevision);
   const isFormData = body instanceof FormData;
   if (body !== undefined && !isFormData) headers['Content-Type'] = 'application/json';
   const response = await fetch(`${origin}${pathname}`, {
@@ -100,7 +107,7 @@ before(async () => {
 
   const port = await freePort();
   origin = `http://127.0.0.1:${port}`;
-  server = spawn(process.execPath, ['src/server.js'], {
+  server = spawn(process.execPath, ['--import', './test-support/upload-barrier.js', 'src/server.js'], {
     cwd: backendDirectory,
     env: {
       ...process.env,
@@ -109,7 +116,7 @@ before(async () => {
       TRUST_PROXY: '1',
       PORT: String(port)
     },
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc']
   });
   server.stdout.setEncoding('utf8').on('data', (chunk) => { childOutput += chunk; });
   server.stderr.setEncoding('utf8').on('data', (chunk) => { childOutput += chunk; });
@@ -552,6 +559,7 @@ test('rejects create and edit writes when the admin session is revoked during fi
       headers: {
         Cookie: editor.cookie,
         'X-CSRF-Token': editor.csrf.csrf,
+        ...(method === 'PATCH' ? { 'X-Update-Revision': '0' } : {}),
         'Content-Type': `multipart/form-data; boundary=${boundary}`
       },
       body: stream,
@@ -712,8 +720,8 @@ test('rejects create and edit writes when the admin session is revoked during fi
       assert.equal(status, 'published');
     }
   );
-  assert.equal(conflictResponse.status, 400);
-  assert.match((await conflictResponse.json()).error, /公開済み投稿を予約状態には変更できません/);
+  assert.equal(conflictResponse.status, 409);
+  assert.match((await conflictResponse.json()).error, /変更/);
 
   const postConflictDatabase = new Database(path.join(dataDirectory, 'cms.sqlite'));
   const unchangedScheduled = postConflictDatabase.prepare('SELECT title, status, scheduled_at AS scheduledAt FROM updates WHERE id = ?')
@@ -786,14 +794,20 @@ test('rejects stale edit revisions after another edit or publication state chang
   const latest = await request(path, { method: 'PATCH', ...csrf, expectedRevision: 1, body: { ...edit, title: 'Latest saved' } });
   assert.equal(latest.response.status, 200);
   assert.equal(latest.data.update.revision, 2);
+  for (const action of ['publish', 'unpublish']) {
+    assert.equal((await request(`${path}/${action}`, { method: 'POST', ...csrf, expectedRevision: null })).response.status, 428);
+    assert.equal((await request(`${path}/${action}`, { method: 'POST', ...csrf, expectedRevision: 'bad' })).response.status, 400);
+    assert.equal((await request(`${path}/${action}`, { method: 'POST', ...csrf, expectedRevision: 0 })).response.status, 409);
+  }
   const published = await request(`${path}/publish`, { method: 'POST', ...csrf });
   assert.equal(published.data.update.revision, 3);
   assert.equal((await request(path, { method: 'PATCH', ...csrf, expectedRevision: 2, body: edit })).response.status, 409);
+  assert.equal((await request(`${path}/unpublish`, { method: 'POST', ...csrf, expectedRevision: 2 })).response.status, 409);
   const withdrawn = await request(`${path}/unpublish`, { method: 'POST', ...csrf });
   assert.equal(withdrawn.data.update.revision, 4);
   assert.equal((await request(path, { method: 'PATCH', ...csrf, expectedRevision: 3, body: edit })).response.status, 409);
-  // Older API clients can still omit the optional precondition.
-  assert.equal((await request(path, { method: 'PATCH', ...csrf, body: edit })).response.status, 200);
+  assert.equal((await request(path, { method: 'PATCH', ...csrf, expectedRevision: null, body: edit })).response.status, 428);
+  assert.equal((await request(path, { method: 'PATCH', ...csrf, expectedRevision: 4, body: edit })).response.status, 200);
   const list = await request('/api/admin/updates', { cookie: authenticated.cookie });
   assert.equal(list.data.updates.find((update) => update.id === id).revision, 5);
 });
@@ -859,6 +873,45 @@ test('revision migration preserves existing update and attachment data', () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('a save interleaved after revision validation rejects the upload and removes all its files', async () => {
+  const authenticated = await login();
+  const csrf = await csrfFor(authenticated.cookie);
+  const created = await request('/api/admin/updates', {
+    method: 'POST', ...csrf, body: { type: 'news', title: 'Before race', body: 'Original', status: 'draft' }
+  });
+  assert.equal(created.response.status, 201);
+  const id = created.data.update.id;
+  const pathname = `/api/admin/updates/${id}`;
+  const beforeFiles = readdirSync(pathJoinUploads()).sort();
+  const armed = once(server, 'message', { signal: AbortSignal.timeout(5000) });
+  server.send('arm-upload-barrier');
+  assert.equal((await armed)[0], 'upload-barrier-armed');
+  const form = new FormData();
+  form.set('type', 'news');
+  form.set('title', 'Losing save');
+  form.set('body', 'Must not overwrite');
+  form.append('attachments', new Blob(['%PDF-1.4\n'], { type: 'application/pdf' }), 'race.pdf');
+  const paused = once(server, 'message', { signal: AbortSignal.timeout(5000) });
+  const losing = request(pathname, { method: 'PATCH', ...csrf, expectedRevision: 0, body: form });
+  try {
+    assert.equal((await paused)[0], 'upload-barrier-paused');
+    const winner = await request(pathname, {
+      method: 'PATCH', ...csrf, expectedRevision: 0, body: { type: 'news', title: 'Winning save', body: 'New body' }
+    });
+    assert.equal(winner.response.status, 200);
+  } finally {
+    server.send('release-upload-barrier');
+  }
+  assert.equal((await losing).response.status, 409);
+  const current = await request(pathname, { cookie: authenticated.cookie });
+  assert.equal(current.data.update.title, 'Winning save');
+  assert.equal(current.data.update.body, 'New body');
+  assert.equal(current.data.update.revision, 1);
+  assert.deepEqual(current.data.update.attachments, []);
+  assert.deepEqual(readdirSync(pathJoinUploads()).sort(), beforeFiles);
+  assert.deepEqual(readdirSync(pathJoinUploads('.tmp')), []);
 });
 
 test('limits failed login attempts by account across client IP addresses', async () => {

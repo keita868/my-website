@@ -17,6 +17,17 @@ async function csrfHeaders() {
   return { 'X-CSRF-Token': csrfToken };
 }
 
+// Inert removes keyboard focus; restore it after a failed save unless the user moved it.
+function lockForm(form) {
+  const focused = document.activeElement;
+  form.inert = true;
+  return (failed) => {
+    form.inert = false;
+    if (failed && focused && form.contains(focused)
+      && (!document.activeElement || document.activeElement === document.body)) focused.focus();
+  };
+}
+
 function renderAdmin(admin) {
   const item = document.createElement('article');
   item.className = 'admin-row';
@@ -64,7 +75,10 @@ function renderAdmin(admin) {
   save.type = 'submit';
   save.textContent = '変更を保存';
   actions.append(status, save);
-  form.append(fields, actions);
+  const message = document.createElement('p');
+  message.className = 'form-error admin-save-message';
+  message.setAttribute('role', 'status');
+  form.append(fields, actions, message);
   item.append(form);
   return item;
 }
@@ -124,7 +138,8 @@ createForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!ready || creating) return;
   creating = true;
-  createForm.inert = true;
+  const unlock = lockForm(createForm);
+  let failed = true;
   createForm.setAttribute('aria-busy', 'true');
   createError.textContent = '';
   delete createError.dataset.success;
@@ -137,6 +152,7 @@ createForm.addEventListener('submit', async (event) => {
       headers: { 'Content-Type': 'application/json', ...await csrfHeaders() },
       body: JSON.stringify(fields)
     });
+    failed = false;
     createForm.reset();
     appendAdminIfMissing(admin);
     createError.dataset.success = '';
@@ -145,9 +161,9 @@ createForm.addEventListener('submit', async (event) => {
     createError.textContent = error.message;
   } finally {
     creating = false;
-    createForm.inert = false;
-    createForm.removeAttribute('aria-busy');
     button.disabled = false;
+    unlock(failed);
+    createForm.removeAttribute('aria-busy');
   }
 });
 
@@ -157,12 +173,13 @@ adminList.addEventListener('submit', async (event) => {
   const form = event.target;
   if (savingForms.has(form)) return;
   savingForms.add(form);
-  form.inert = true;
+  const unlock = lockForm(form);
+  let failed = true;
   form.setAttribute('aria-busy', 'true');
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
-  listError.textContent = '';
-  delete listError.dataset.success;
+  const message = form.querySelector('.admin-save-message');
+  message.textContent = '';
   try {
     const fields = new FormData(form);
     const { admin } = await request(`/api/admins/${form.dataset.id}`, {
@@ -175,16 +192,18 @@ adminList.addEventListener('submit', async (event) => {
         isActive: fields.get('isActive') === 'on'
       })
     });
-    form.closest('.admin-row').replaceWith(renderAdmin(admin));
-    listError.dataset.success = '';
-    listError.textContent = '変更を保存しました。';
+    failed = false;
+    const updated = renderAdmin(admin);
+    updated.querySelector('.admin-save-message').textContent = '変更を保存しました。';
+    updated.querySelector('.admin-save-message').dataset.success = '';
+    form.closest('.admin-row').replaceWith(updated);
   } catch (error) {
-    listError.textContent = error.message;
+    message.textContent = error.message;
   } finally {
     savingForms.delete(form);
-    form.inert = false;
-    form.removeAttribute('aria-busy');
     button.disabled = false;
+    unlock(failed);
+    form.removeAttribute('aria-busy');
   }
 });
 

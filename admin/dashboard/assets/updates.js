@@ -122,6 +122,7 @@ function renderUpdate(update) {
     publishButton.className = 'secondary-button';
     publishButton.type = 'button';
     publishButton.dataset.publishId = update.id;
+    publishButton.dataset.revision = update.revision;
     publishButton.textContent = update.scheduledAt ? '今すぐ公開' : '公開する';
     actions.append(publishButton);
   } else {
@@ -129,6 +130,7 @@ function renderUpdate(update) {
     unpublishButton.className = 'secondary-button';
     unpublishButton.type = 'button';
     unpublishButton.dataset.unpublishId = update.id;
+    unpublishButton.dataset.revision = update.revision;
     unpublishButton.textContent = '公開を取り下げる';
     actions.append(unpublishButton);
   }
@@ -176,7 +178,7 @@ updateList.addEventListener('click', async (event) => {
       const updateId = button.dataset.unpublishId || button.dataset.publishId;
       await request(`/api/admin/updates/${updateId}/${isUnpublish ? 'unpublish' : 'publish'}`, {
         method: 'POST',
-        headers: await csrfHeaders()
+        headers: { ...await csrfHeaders(), 'X-Update-Revision': button.dataset.revision }
       });
       updatesMessage.textContent = isUnpublish ? '投稿の公開を取り下げました。' : '投稿を公開しました。';
     }

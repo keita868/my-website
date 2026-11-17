@@ -686,7 +686,19 @@ app.get('/api/admin/updates/:id', requireAdmin, (req, res) => {
   res.json({ update });
 });
 
-app.post('/api/admin/updates/:id/publish', requireAdmin, requireCsrf, (req, res) => {
+function requireUpdateRevision(req, res, next) {
+  const value = req.get('x-update-revision');
+  if (value === undefined) {
+    return res.status(428).json({ error: '投稿の版が必要です。画面を再読み込みしてください。' });
+  }
+  if (!/^(0|[1-9]\d*)$/.test(value) || !Number.isSafeInteger(Number(value))) {
+    return res.status(400).json({ error: '投稿の版が正しくありません。画面を再読み込みしてください。' });
+  }
+  req.updateRevision = Number(value);
+  next();
+}
+
+app.post('/api/admin/updates/:id/publish', requireAdmin, requireCsrf, requireUpdateRevision, (req, res) => {
   const updateId = Number(req.params.id);
   if (!Number.isSafeInteger(updateId) || updateId < 1) {
     return res.status(400).json({ error: '投稿IDが正しくありません。' });
@@ -696,12 +708,12 @@ app.post('/api/admin/updates/:id/publish', requireAdmin, requireCsrf, (req, res)
   const publish = database.prepare(`
     UPDATE updates
     SET status = 'published', published_at = ?, scheduled_at = NULL, updated_at = ?, updated_by = ?, revision = revision + 1
-    WHERE id = ? AND status = 'draft'
-  `).run(now, now, req.admin.id, updateId);
+    WHERE id = ? AND status = 'draft' AND revision = ?
+  `).run(now, now, req.admin.id, updateId, req.updateRevision);
   if (publish.changes !== 1) {
     const existing = database.prepare('SELECT status FROM updates WHERE id = ?').get(updateId);
     if (!existing) return res.status(404).json({ error: '投稿が見つかりません。' });
-    return res.status(409).json({ error: 'この投稿は下書きではないため、公開できません。' });
+    return res.status(409).json({ error: '投稿の状態または版が変更されています。画面を再読み込みしてください。' });
   }
 
   const update = database.prepare(`
@@ -713,7 +725,7 @@ app.post('/api/admin/updates/:id/publish', requireAdmin, requireCsrf, (req, res)
   res.json({ success: true, update: updateWithAttachments(update) });
 });
 
-app.post('/api/admin/updates/:id/unpublish', requireAdmin, requireCsrf, (req, res) => {
+app.post('/api/admin/updates/:id/unpublish', requireAdmin, requireCsrf, requireUpdateRevision, (req, res) => {
   const updateId = Number(req.params.id);
   if (!Number.isSafeInteger(updateId) || updateId < 1) {
     return res.status(400).json({ error: '投稿IDが正しくありません。' });
@@ -722,37 +734,29 @@ app.post('/api/admin/updates/:id/unpublish', requireAdmin, requireCsrf, (req, re
   const result = database.prepare(`
     UPDATE updates
     SET status = 'draft', published_at = NULL, scheduled_at = NULL, updated_at = ?, updated_by = ?, revision = revision + 1
-    WHERE id = ? AND status = 'published'
-  `).run(now, req.admin.id, updateId);
+    WHERE id = ? AND status = 'published' AND revision = ?
+  `).run(now, req.admin.id, updateId, req.updateRevision);
   if (result.changes !== 1) {
     const existing = database.prepare('SELECT id FROM updates WHERE id = ?').get(updateId);
     if (!existing) return res.status(404).json({ error: '投稿が見つかりません。' });
-    return res.status(409).json({ error: '公開中の投稿ではありません。' });
+    return res.status(409).json({ error: '投稿の状態または版が変更されています。画面を再読み込みしてください。' });
   }
   res.json({ success: true, update: getUpdate(updateId) });
 });
 
-app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, receiveAttachments, async (req, res, next) => {
+app.patch('/api/admin/updates/:id', requireAdmin, requireCsrf, requireUpdateRevision, receiveAttachments, async (req, res, next) => {
   const updateId = Number(req.params.id);
   if (!Number.isSafeInteger(updateId) || updateId < 1) {
     cleanupTemporaryFiles(req.files);
     return res.status(400).json({ error: '投稿IDが正しくありません。' });
   }
-  const revisionHeader = req.get('x-update-revision');
-  let expectedRevision;
-  if (revisionHeader !== undefined) {
-    expectedRevision = Number(revisionHeader);
-    if (!/^(0|[1-9]\d*)$/.test(revisionHeader) || !Number.isSafeInteger(expectedRevision)) {
-      cleanupTemporaryFiles(req.files);
-      return res.status(400).json({ error: '投稿の版が正しくありません。画面を再読み込みしてください。' });
-    }
-  }
+  const expectedRevision = req.updateRevision;
   const existing = database.prepare('SELECT status, revision FROM updates WHERE id = ?').get(updateId);
   if (!existing) {
     cleanupTemporaryFiles(req.files);
     return res.status(404).json({ error: '投稿が見つかりません。' });
   }
-  if (expectedRevision !== undefined && expectedRevision !== existing.revision) {
+  if (expectedRevision !== existing.revision) {
     cleanupTemporaryFiles(req.files);
     return res.status(409).json({ error: '投稿が別の操作で変更されています。入力内容を控えてから画面を再読み込みしてください。' });
   }

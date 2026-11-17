@@ -5,7 +5,9 @@ import { page, deferred, flush } from '../test-support/dom.js';
 test('credential forms use POST even when JavaScript has not loaded', () => {
   for (const name of ['login', 'account', 'admins']) {
     const { document } = page(name);
-    for (const input of document.querySelectorAll('input[type="password"]')) {
+    const inputs = document.querySelectorAll('input[type="password"]');
+    assert.equal(inputs.length, name === 'account' ? 2 : 1);
+    for (const input of inputs) {
       const form = input.closest('form');
       assert.equal(form.getAttribute('method').toLowerCase(), 'post');
       assert.ok(form.getAttribute('action').startsWith('/api/'));
@@ -16,11 +18,13 @@ test('credential forms use POST even when JavaScript has not loaded', () => {
 test('login submission is intercepted immediately, including while CSRF is pending', async () => {
   const csrf = deferred();
   let csrfCalls = 0, writes = 0;
+  let written;
   const fixture = page('login', async (url, options = {}) => {
     if (url === '/api/auth/csrf') { csrfCalls++; return csrf.promise; }
     assert.equal(url, '/api/auth/login');
     assert.equal(options.method, 'POST');
     assert.equal(JSON.parse(options.body).password, 'private-password');
+    written = options;
     writes++;
     return { ok: false, status: 401, json: async () => ({ error: 'incorrect' }) };
   });
@@ -37,6 +41,7 @@ test('login submission is intercepted immediately, including while CSRF is pendi
   csrf.resolve({ ok: true, json: async () => ({ csrfToken: 'token' }) });
   await flush();
   assert.equal(writes, 1);
+  assert.equal(written.headers['X-CSRF-Token'], 'token');
   assert.equal(form.querySelector('button[type="submit"]').disabled, false);
   assert.deepEqual(fixture.navigations, []);
 });

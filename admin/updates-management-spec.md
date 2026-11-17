@@ -157,6 +157,7 @@ CREATE TABLE updates (
   status TEXT NOT NULL CHECK (status IN ('draft', 'published')),
   published_at TEXT,
   scheduled_at TEXT,
+  revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
   created_by INTEGER NOT NULL,
   updated_by INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -170,6 +171,8 @@ CREATE TABLE updates (
 
 このSQLはSQLite用の例。既存の`admins`テーブル名・主キー名、DBの種類、マイグレーション方式を確認してから適用する。既存テーブルを削除・再作成しない。
 予約中の投稿は`status = 'draft'`のまま`scheduled_at`を設定し、サーバー側の定期処理で公開する。
+
+既存DBには`backend/migrations/004_update_revisions.sql`で`revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0)`を追加する。新規DBにも同じマイグレーションを適用する。APIは起動時に未適用マイグレーションをトランザクション内で適用してから受付を開始する。
 
 ## 6. API設計案
 
@@ -246,7 +249,9 @@ CREATE TABLE updates (
 
 各変更APIでは認証とCSRFトークンを検証する。予約投稿はサーバー側の定期処理が予定時刻到達後に公開する。
 
-投稿取得・一覧のレスポンスには整数の`revision`を含める。管理画面の編集PATCHは、読み込み時の値を`X-Update-Revision`ヘッダーに10進整数で送信する。サーバーの現在の版と異なる場合は`409`を返し、本文と追加添付を保存しない。形式が不正な場合は`400`を返す。旧APIクライアントとの互換性のためヘッダー省略は受け付けるが、その場合は編集画面を開いてから保存開始までの他者の変更を検出できない。
+投稿取得・一覧のレスポンスには整数の`revision`を含める。編集PATCH・手動公開・公開取り下げは、画面に読み込んだ時点の値を`X-Update-Revision`ヘッダーに10進整数で送信する。サーバーの現在の版と異なる場合は`409`を返し、本文と追加添付を保存しない。形式が不正な場合は`400`を返す。ヘッダー省略は`428 Precondition Required`で拒否する。旧クライアントも読み込み時の版を送る必要がある。
+
+保存時の照合と更新は`WHERE id = ? AND revision = ?`を含む同一UPDATEで行い、本文・版の加算・添付レコードの登録を同じトランザクションで確定する。予約自動公開も状態変更と版の加算を同一UPDATEで行う。追加添付は検証中に仮置きし、確定前の認証・状態・版の再確認に失敗した場合は仮置きファイルと移動済みファイルを削除し、添付レコードを残さない。
 
 `revision`は本文編集・公開・公開取り下げ・予約自動公開で増加する。添付ファイル単独の削除では増加しない。編集中に添付を削除しても、本文の入力内容と読み込み時の版番号を保持する。版の競合時は入力を残し、内容を控えてから最新の投稿を読み直すよう案内する。
 

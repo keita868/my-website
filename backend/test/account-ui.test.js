@@ -11,19 +11,21 @@ function account(request) {
 const admin = { id: 1, displayName: 'Owner', email: 'owner@example.test', role: 'superadmin' };
 
 test('profile fields stay locked until loading succeeds, and failed loading can be retried', async () => {
-  let fail = true;
-  const fixture = account(async () => {
-    if (fail) throw new Error('offline');
-    return { admin };
-  });
-  await flush();
+  const initial = deferred();
+  const retried = deferred();
+  let calls = 0;
+  const fixture = account(() => ++calls === 1 ? initial.promise : retried.promise);
   const form = fixture.document.querySelector('#profile-form');
   const retry = fixture.document.querySelector('#profile-retry');
   assert.equal(form.inert, true);
   assert.equal(fixture.document.querySelector('#password-form').inert, true);
+  initial.reject(new Error('offline'));
+  await flush();
   assert.equal(retry.hidden, false);
-  fail = false;
   fixture.event(retry, 'click');
+  assert.equal(form.inert, true);
+  assert.equal(fixture.document.querySelector('#password-form').inert, true);
+  retried.resolve({ admin });
   await flush();
   assert.equal(form.inert, false);
   assert.equal(form.elements.email.value, admin.email);
@@ -54,11 +56,11 @@ test('profile saving locks inputs before CSRF, prevents reentry and uses the sav
   csrf.resolve({ csrfToken: 'token' });
   await flush();
   assert.equal(writes, 1);
-  saved.resolve({ admin: { ...admin, displayName: 'Changed' } });
+  saved.resolve({ admin: { ...admin, displayName: 'Normalized' } });
   await flush();
   assert.equal(reads, 1); // No second GET that can overwrite input or misreport a successful save.
   assert.equal(form.inert, false);
-  assert.equal(form.elements.displayName.value, 'Changed');
+  assert.equal(form.elements.displayName.value, 'Normalized');
   assert.match(fixture.document.querySelector('#profile-message').textContent, /保存しました/);
 });
 

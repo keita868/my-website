@@ -2,12 +2,17 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 
-const clearedSelects = new WeakSet();
+const clearedSelects = new WeakMap();
 
 function selectedOptions(select) {
   const selected = [...select.querySelectorAll('option[selected]')];
   const multiple = select.hasAttribute('multiple');
   if (selected.length) return multiple ? selected : [selected.at(-1)];
+  const options = [...select.querySelectorAll('option')];
+  const clearedOptions = clearedSelects.get(select);
+  if (clearedOptions && (options.length !== clearedOptions.length || options.some((option, index) => option !== clearedOptions[index]))) {
+    clearedSelects.delete(select);
+  }
   if (multiple || clearedSelects.has(select) || Number(select.getAttribute('size') || 1) > 1) return [];
   const fallback = [...select.querySelectorAll('option')].find((option) => (
     !option.hasAttribute('disabled') && !option.closest('optgroup[disabled]')
@@ -36,11 +41,12 @@ export function page(name, request) {
       return selectedOptions(this)[0]?.value || '';
     },
     set(value) {
+      const stringValue = String(value);
       const options = [...this.querySelectorAll('option')];
-      const firstMatch = options.find((option) => option.value === String(value));
+      const firstMatch = options.find((option) => option.value === stringValue);
       for (const option of options) option.toggleAttribute('selected', option === firstMatch);
       if (firstMatch) clearedSelects.delete(this);
-      else clearedSelects.add(this);
+      else clearedSelects.set(this, options);
     }
   });
   for (const input of document.querySelectorAll('input[type="file"]')) {
